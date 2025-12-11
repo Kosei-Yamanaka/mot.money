@@ -2,11 +2,13 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
 import {
-    FlatList,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    View,
+  Alert,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
 const STORAGE_KEY = "records";
@@ -15,19 +17,19 @@ type Mode = "expense" | "income";
 
 type RecordItem = {
   id: string;
-  date: string;
+  date: string;          // "12/11" みたいな文字列
   mode: Mode;
   store: string;
-  displayAmount: string; // 画面表示用（金額文字列）
-  actualAmount: number;  // 計算用（+50済み）
-  createdAt: string;     // ISO文字列
+  displayAmount: string; // 表示用
+  actualAmount?: number;
+  createdAt?: string;
 };
 
 type Summary = {
-  monthLabel: string; // "2025/12" みたいな表示
+  monthLabel: string; // "2025/12"
   income: number;
   expense: number;
-  balance: number;    // income - expense
+  balance: number;
 };
 
 export default function History() {
@@ -38,14 +40,13 @@ export default function History() {
   const calcSummary = (list: RecordItem[]) => {
     const now = new Date();
     const year = now.getFullYear();
-    const month = now.getMonth(); // 0〜11
+    const month = now.getMonth() + 1; // 1〜12
 
-    // 今月分だけ抽出（createdAt から判定）
-    const thisMonth = list.filter((item) => {
-      if (!item.createdAt) return false;
-      const d = new Date(item.createdAt);
-      return d.getFullYear() === year && d.getMonth() === month;
-    });
+    const monthPrefix = `${month}/`; // "12/"
+
+    const thisMonth = list.filter((item) =>
+      item.date?.startsWith(monthPrefix)
+    );
 
     const income = thisMonth
       .filter((r) => r.mode === "income")
@@ -58,7 +59,7 @@ export default function History() {
     const balance = income - expense;
 
     setSummary({
-      monthLabel: `${year}/${month + 1}`,
+      monthLabel: `${year}/${month}`,
       income,
       expense,
       balance,
@@ -76,7 +77,6 @@ export default function History() {
     }
   };
 
-  // 画面に戻ってきたときも再読み込み
   useFocusEffect(
     useCallback(() => {
       loadRecords();
@@ -91,6 +91,26 @@ export default function History() {
 
   const formatYen = (value: number) =>
     value.toLocaleString("ja-JP", { maximumFractionDigits: 0 });
+
+  const handleDelete = (id: string) => {
+    Alert.alert("削除確認", "この記録を削除しますか？", [
+      { text: "キャンセル", style: "cancel" },
+      {
+        text: "削除",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const newList = records.filter((r) => r.id !== id);
+            setRecords(newList);
+            await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+            calcSummary(newList);
+          } catch (e) {
+            console.error(e);
+          }
+        },
+      },
+    ]);
+  };
 
   const renderItem = ({ item }: { item: RecordItem }) => {
     const isExpense = item.mode === "expense";
@@ -113,13 +133,19 @@ export default function History() {
             {item.displayAmount} 円
           </Text>
         </View>
+        <View style={styles.itemRowBottom}>
+          <View />
+          <TouchableOpacity onPress={() => handleDelete(item.id)}>
+            <Text style={styles.deleteText}>削除</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   };
 
   return (
     <View style={styles.container}>
-      {/* 今月のサマリー */}
+      {/* 今月サマリー */}
       {summary && (
         <View style={styles.summaryBox}>
           <Text style={styles.summaryTitle}>
@@ -151,7 +177,7 @@ export default function History() {
         </View>
       )}
 
-      {/* 履歴リスト */}
+      {/* 履歴 */}
       {records.length === 0 ? (
         <View style={styles.emptyBox}>
           <Text style={styles.emptyText}>まだ記録がありません</Text>
@@ -222,6 +248,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
   },
+  itemRowBottom: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 4,
+  },
   date: {
     fontSize: 14,
     color: "#666",
@@ -244,5 +275,10 @@ const styles = StyleSheet.create({
   },
   income: {
     color: "#0275d8",
+  },
+  deleteText: {
+    fontSize: 14,
+    color: "#d9534f",
+    fontWeight: "bold",
   },
 });
