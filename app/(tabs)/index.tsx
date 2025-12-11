@@ -1,89 +1,154 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useState } from "react";
-import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React, { useState } from "react";
+import {
+  Alert,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 
-const MAX_DIGITS = 5; // 最大5桁 → 99999 * 100 = 9,999,900円まで
 const STORAGE_KEY = "records";
 
 type Mode = "expense" | "income";
 
+type RecordItem = {
+  id: string;
+  date: string;          // "12/11"
+  mode: Mode;
+  store: string;
+  displayAmount: string; // 3,400 みたいな文字列
+  actualAmount: number;  // 計算用
+  createdAt: string;
+};
+
+const STORES = ["コンビニ", "スーパー", "カフェ"];
+
 export default function Index() {
-  const [digits, setDigits] = useState<string>(""); // 百円単位で入力（"2", "45", "111" など）
-  const [store, setStore] = useState<string>("");   // お店
-  const [message, setMessage] = useState<string>("");
-  const [mode, setMode] = useState<Mode>("expense"); // 支出 or 収入
+  const [mode, setMode] = useState<Mode>("expense");
+  const [selectedStore, setSelectedStore] = useState<string>("コンビニ");
 
-  // 生の金額（数値）。digits = "45" → rawAmount = 4500
-  const rawAmount = digits === "" ? 0 : Number(digits) * 100;
+  // 金額入力用
+  const [rawDigits, setRawDigits] = useState<string>(""); // 押された数字の文字列
+  const [amount, setAmount] = useState<number>(0);        // 表示用 + 保存用
 
-  // 表示用金額
-  //  - 未入力のときは「00」
-  //  - 入力されているときはカンマ付き ("11,100" など)
-  const displayAmount =
-    digits === "" ? "00" : rawAmount.toLocaleString("ja-JP");
+  // 日付
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
-  // 内部で使う金額：とりあえず +50（あとで調整OK）
-  const actualAmount = digits === "" ? 0 : Number(digits) * 100 + 50;
-
-  // 数字ボタンを押したとき（最大 MAX_DIGITS 桁）
-  const handleDigitPress = (d: string) => {
-    if (digits.length >= MAX_DIGITS) return;
-    setDigits(digits + d);
-    setMessage("");
+  // ========= 日付関係 =========
+  const formatDateLabel = (d: Date) => {
+    const m = d.getMonth() + 1;
+    const day = d.getDate();
+    return `${m}/${day}`;
   };
 
-  const handleClear = () => {
-    setDigits("");
-    setMessage("");
+  const changeDateBy = (delta: number) => {
+    setSelectedDate((prev) => {
+      const next = new Date(prev);
+      next.setDate(prev.getDate() + delta);
+      return next;
+    });
   };
 
-  const handleSave = async () => {
-    if (digits === "" || !store) {
-      setMessage("金額とお店を選んでね");
+  // ========= 金額入力ロジック =========
+  // 入力値を ×100 して金額にする
+  const updateAmountFromDigits = (digits: string) => {
+    if (!digits) {
+      setAmount(0);
       return;
     }
 
-    const now = new Date();
-    const dateStr = `${now.getMonth() + 1}/${now.getDate()}`;
-    const createdAt = now.toISOString();
+    const n = parseInt(digits, 10);
+    if (Number.isNaN(n)) {
+      setAmount(0);
+      return;
+    }
 
-    const newRecord = {
-      id: createdAt, // とりあえずISO文字列をIDに
-      date: dateStr,
+    // あなたの希望：「34 → 3400円」
+    const rounded = n * 100;
+    setAmount(rounded);
+  };
+
+  const handleDigitPress = (digit: string) => {
+    setRawDigits((prev) => {
+      const next = (prev + digit).replace(/^0+/, ""); // 先頭の0は削除
+      if (next.length > 6) return prev; // 桁数制限
+      updateAmountFromDigits(next || "0");
+      return next || "";
+    });
+  };
+
+  const handleBackspace = () => {
+    setRawDigits((prev) => {
+      const next = prev.slice(0, -1);
+      updateAmountFromDigits(next || "0");
+      return next;
+    });
+  };
+
+  const formatAmountText = () => {
+    if (rawDigits === "") return "00"; 
+    return amount.toLocaleString("ja-JP", { maximumFractionDigits: 0 });
+  };
+
+  const resetInput = () => {
+    setRawDigits("");
+    setAmount(0);
+    setSelectedStore("コンビニ");
+    setMode("expense");
+  };
+
+  // ========= 保存処理 =========
+  const handleSave = async () => {
+    if (amount === 0) {
+      Alert.alert("金額が 0 円です", "金額を入力してください。");
+      return;
+    }
+
+    const month = selectedDate.getMonth() + 1;
+    const day = selectedDate.getDate();
+    const dateLabel = `${month}/${day}`;
+
+    const newRecord: RecordItem = {
+      id: Date.now().toString(),
+      date: dateLabel,
       mode,
-      store,
-      displayAmount, // 画面用（文字列, カンマ付き）
-      actualAmount,  // 計算用（数値、+50済み）
-      createdAt,
+      store: selectedStore,
+      displayAmount: formatAmountText(),
+      actualAmount: mode === "expense" ? amount + 50 : amount, 
+      createdAt: new Date().toISOString(),
     };
 
     try {
       const json = await AsyncStorage.getItem(STORAGE_KEY);
-      const list = json ? JSON.parse(json) : [];
-      const newList = [newRecord, ...list]; // 先頭に追加
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+      const list: RecordItem[] = json ? JSON.parse(json) : [];
+      const updated = [newRecord, ...list];
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
-      setMessage("保存したよ！");
-      setDigits("");
-      setStore("");
+      resetInput();
+      Alert.alert("保存しました");
     } catch (e) {
       console.error(e);
-      setMessage("保存に失敗しました…");
+      Alert.alert("エラー", "保存に失敗しました");
     }
   };
 
+  // ========= JSX =========
   return (
     <View style={styles.container}>
-      {/* 支出 / 収入 タブ */}
-      <View style={styles.tabRow}>
+      {/* 支出 / 収入 切り替え */}
+      <View style={styles.modeRow}>
         <TouchableOpacity
-          style={[styles.tab, mode === "expense" && styles.tabActive]}
+          style={[
+            styles.modeButton,
+            mode === "expense" ? styles.modeActiveExpense : styles.modeInactive,
+          ]}
           onPress={() => setMode("expense")}
         >
           <Text
             style={[
-              styles.tabText,
-              mode === "expense" && styles.tabTextActive,
+              styles.modeText,
+              mode === "expense" ? styles.modeTextActive : styles.modeTextInactive,
             ]}
           >
             支出
@@ -91,13 +156,16 @@ export default function Index() {
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.tab, mode === "income" && styles.tabActive]}
+          style={[
+            styles.modeButton,
+            mode === "income" ? styles.modeActiveIncome : styles.modeInactive,
+          ]}
           onPress={() => setMode("income")}
         >
           <Text
             style={[
-              styles.tabText,
-              mode === "income" && styles.tabTextActive,
+              styles.modeText,
+              mode === "income" ? styles.modeTextActive : styles.modeTextInactive,
             ]}
           >
             収入
@@ -105,68 +173,84 @@ export default function Index() {
         </TouchableOpacity>
       </View>
 
+      {/* 日付 */}
+      <View style={styles.row}>
+        <Text style={styles.label}>日付</Text>
+        <View style={styles.dateControls}>
+          <TouchableOpacity style={styles.dateButton} onPress={() => changeDateBy(-1)}>
+            <Text style={styles.dateButtonText}>◀</Text>
+          </TouchableOpacity>
+
+          <Text style={styles.dateText}>{formatDateLabel(selectedDate)}</Text>
+
+          <TouchableOpacity style={styles.dateButton} onPress={() => changeDateBy(1)}>
+            <Text style={styles.dateButtonText}>▶</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
       {/* 金額 */}
       <View style={styles.row}>
         <Text style={styles.label}>金額</Text>
         <View style={styles.amountBox}>
-          <Text style={styles.amountText}>{displayAmount} 円</Text>
+          <Text style={styles.amountText}>{formatAmountText()} 円</Text>
         </View>
       </View>
 
       {/* お店 */}
-      <View style={styles.row}>
+      <View style={[styles.row, { marginTop: 16 }]}>
         <Text style={styles.label}>お店</Text>
-        <View style={styles.storeGrid}>
-          {["コンビニ", "スーパー", "カフェ"].map((name) => (
-            <TouchableOpacity
-              key={name}
-              style={[
-                styles.storeBtn,
-                store === name && styles.storeBtnSelected,
-              ]}
-              onPress={() => setStore(name)}
-            >
-              <Text style={styles.storeText}>{name}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
       </View>
 
-      {/* 数字キーパッド */}
-      <View style={styles.pad}>
-        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => (
+      <View style={styles.storeRow}>
+        {STORES.map((store) => (
           <TouchableOpacity
-            key={n}
-            style={styles.key}
-            onPress={() => handleDigitPress(String(n))}
+            key={store}
+            style={[
+              styles.storeButton,
+              selectedStore === store && styles.storeButtonActive,
+            ]}
+            onPress={() => setSelectedStore(store)}
           >
-            <Text style={styles.keyText}>{n}</Text>
+            <Text
+              style={[
+                styles.storeButtonText,
+                selectedStore === store && styles.storeButtonTextActive,
+              ]}
+            >
+              {store}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* キーパッド */}
+      <View style={styles.keypad}>
+        {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => (
+          <TouchableOpacity
+            key={d}
+            style={styles.keyButton}
+            onPress={() => handleDigitPress(d)}
+          >
+            <Text style={styles.keyText}>{d}</Text>
           </TouchableOpacity>
         ))}
 
         {/* 保存 */}
-        <TouchableOpacity
-          style={[styles.key, styles.saveKey]}
-          onPress={handleSave}
-        >
-          <Text style={[styles.keyText, styles.saveText]}>保存</Text>
+        <TouchableOpacity style={[styles.keyButton, styles.saveButton]} onPress={handleSave}>
+          <Text style={styles.saveButtonText}>保存</Text>
         </TouchableOpacity>
 
         {/* 0 */}
-        <TouchableOpacity
-          style={styles.key}
-          onPress={() => handleDigitPress("0")}
-        >
+        <TouchableOpacity style={styles.keyButton} onPress={() => handleDigitPress("0")}>
           <Text style={styles.keyText}>0</Text>
         </TouchableOpacity>
 
-        {/* クリア */}
-        <TouchableOpacity style={styles.key} onPress={handleClear}>
+        {/* ← バックスペース */}
+        <TouchableOpacity style={styles.keyButton} onPress={handleBackspace}>
           <Text style={styles.keyText}>←</Text>
         </TouchableOpacity>
       </View>
-
-      {message !== "" && <Text style={styles.message}>{message}</Text>}
     </View>
   );
 }
@@ -175,98 +259,139 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#f7f2de",
-    paddingTop: 60,
+    paddingTop: 40,
+    paddingHorizontal: 16,
+  },
+  modeRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  modeButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 24,
+    marginHorizontal: 6,
     alignItems: "center",
   },
-  tabRow: {
-    flexDirection: "row",
-    marginBottom: 20,
+  modeActiveExpense: {
+    backgroundColor: "#4c6fff",
   },
-  tab: {
-    paddingVertical: 8,
-    paddingHorizontal: 40,
-    borderRadius: 20,
-    backgroundColor: "#ccccff",
-    marginHorizontal: 4,
+  modeActiveIncome: {
+    backgroundColor: "#c6b5ff",
   },
-  tabActive: {
-    backgroundColor: "#4b6cff",
+  modeInactive: {
+    backgroundColor: "#e2e2e2",
   },
-  tabText: {
-    fontSize: 18,
-    color: "#000",
-  },
-  tabTextActive: {
-    color: "#fff",
-    fontWeight: "bold",
-  },
-  row: {
-    width: "90%",
-    marginBottom: 12,
-  },
-  label: {
-    fontWeight: "bold",
-    fontSize: 18,
-    marginBottom: 4,
-  },
-  amountBox: {
-    backgroundColor: "#fff",
-    padding: 10,
-    borderRadius: 8,
-  },
-  amountText: {
-    fontSize: 32,
-    textAlign: "right",
-  },
-  storeGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-  },
-  storeBtn: {
-    backgroundColor: "#a7e6ff",
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    marginRight: 8,
-    marginTop: 4,
-  },
-  storeBtnSelected: {
-    backgroundColor: "#1f8bff",
-  },
-  storeText: {
+  modeText: {
     fontSize: 16,
     fontWeight: "bold",
   },
-  pad: {
-    marginTop: 20,
-    width: 260,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
+  modeTextActive: {
+    color: "#fff",
   },
-  key: {
-    width: 75,
-    height: 75,
+  modeTextInactive: {
+    color: "#555",
+  },
+
+  row: {
+     flexDirection: "row",
+     alignItems: "center",
+     marginBottom: 8,
+  },
+  label: {
+    fontSize: 16,
+    fontWeight: "bold",
+    width: 60,
+  },
+
+  amountBox: {
+    flex: 1,
     backgroundColor: "#fff",
-    margin: 5,
-    justifyContent: "center",
-    alignItems: "center",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#ccc",
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: "flex-end",
   },
-  keyText: {
+  amountText: {
     fontSize: 28,
     fontWeight: "bold",
   },
-  saveKey: {
-    backgroundColor: "#264ee4",
+
+  storeRow: {
+    flexDirection: "row",
+    marginBottom: 16,
   },
-  saveText: {
+  storeButton: {
+    flex: 1,
+    backgroundColor: "#aee7ff",
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginHorizontal: 4,
+    alignItems: "center",
+  },
+  storeButtonActive: {
+    backgroundColor: "#4c6fff",
+  },
+  storeButtonText: {
+    fontSize: 16,
+    fontWeight: "bold",
+    color: "#333",
+  },
+  storeButtonTextActive: {
     color: "#fff",
   },
-  message: {
-    marginTop: 10,
+
+  keypad: {
+    marginTop: 8,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+  },
+  keyButton: {
+    width: "30%",
+    aspectRatio: 1,
+    margin: "1.5%",
+    borderRadius: 16,
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 2,
+  },
+  keyText: {
+    fontSize: 24,
+    fontWeight: "bold",
+  },
+
+  saveButton: {
+    backgroundColor: "#2962ff",
+  },
+  saveButtonText: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#fff",
+  },
+
+  dateControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginLeft: 8,
+  },
+  dateButton: {
+    width: 40,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  dateButtonText: {
     fontSize: 16,
+    fontWeight: "bold",
+  },
+  dateText: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginHorizontal: 12,
   },
 });

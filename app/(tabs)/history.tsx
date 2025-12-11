@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
@@ -10,6 +11,10 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import {
+  GestureHandlerRootView,
+  Swipeable,
+} from "react-native-gesture-handler";
 
 const STORAGE_KEY = "records";
 
@@ -92,59 +97,75 @@ export default function History() {
   const formatYen = (value: number) =>
     value.toLocaleString("ja-JP", { maximumFractionDigits: 0 });
 
+  const reallyDelete = async (id: string) => {
+    try {
+      const newList = records.filter((r) => r.id !== id);
+      setRecords(newList);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
+      calcSummary(newList);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleDelete = (id: string) => {
     Alert.alert("削除確認", "この記録を削除しますか？", [
       { text: "キャンセル", style: "cancel" },
       {
         text: "削除",
         style: "destructive",
-        onPress: async () => {
-          try {
-            const newList = records.filter((r) => r.id !== id);
-            setRecords(newList);
-            await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
-            calcSummary(newList);
-          } catch (e) {
-            console.error(e);
-          }
-        },
+        onPress: () => reallyDelete(id),
       },
     ]);
+  };
+
+  const renderRightActions = (id: string) => {
+    return (
+      <TouchableOpacity
+        style={styles.rightAction}
+        onPress={() => handleDelete(id)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="trash-outline" size={22} color="#fff" />
+        <Text style={styles.rightActionText}>削除</Text>
+      </TouchableOpacity>
+    );
   };
 
   const renderItem = ({ item }: { item: RecordItem }) => {
     const isExpense = item.mode === "expense";
     return (
-      <View style={styles.item}>
-        <View style={styles.itemRow}>
-          <Text style={styles.date}>{item.date}</Text>
-          <Text style={[styles.mode, isExpense ? styles.expense : styles.income]}>
-            {isExpense ? "支出" : "収入"}
-          </Text>
+      <Swipeable
+        renderRightActions={() => renderRightActions(item.id)}
+        onSwipeableOpen={() => handleDelete(item.id)} // 最後までスワイプで削除確認
+      >
+        <View style={styles.item}>
+          <View style={styles.itemRow}>
+            <Text style={styles.date}>{item.date}</Text>
+            <Text
+              style={[styles.mode, isExpense ? styles.expense : styles.income]}
+            >
+              {isExpense ? "支出" : "収入"}
+            </Text>
+          </View>
+          <View style={styles.itemRow}>
+            <Text style={styles.store}>{item.store}</Text>
+            <Text
+              style={[
+                styles.amount,
+                isExpense ? styles.expense : styles.income,
+              ]}
+            >
+              {item.displayAmount} 円
+            </Text>
+          </View>
         </View>
-        <View style={styles.itemRow}>
-          <Text style={styles.store}>{item.store}</Text>
-          <Text
-            style={[
-              styles.amount,
-              isExpense ? styles.expense : styles.income,
-            ]}
-          >
-            {item.displayAmount} 円
-          </Text>
-        </View>
-        <View style={styles.itemRowBottom}>
-          <View />
-          <TouchableOpacity onPress={() => handleDelete(item.id)}>
-            <Text style={styles.deleteText}>削除</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      </Swipeable>
     );
   };
 
   return (
-    <View style={styles.container}>
+    <GestureHandlerRootView style={styles.container}>
       {/* 今月サマリー */}
       {summary && (
         <View style={styles.summaryBox}>
@@ -187,13 +208,13 @@ export default function History() {
           data={records}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
-          contentContainerStyle={{ paddingBottom: 20 }}
+          contentContainerStyle={{ paddingBottom: 20, paddingHorizontal: 16 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
         />
       )}
-    </View>
+    </GestureHandlerRootView>
   );
 }
 
@@ -202,7 +223,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f7f2de",
     paddingTop: 40,
-    paddingHorizontal: 16,
   },
   summaryBox: {
     backgroundColor: "#fff",
@@ -211,6 +231,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     borderWidth: 1,
     borderColor: "#ddd",
+    marginHorizontal: 16,
   },
   summaryTitle: {
     fontSize: 16,
@@ -248,11 +269,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
   },
-  itemRowBottom: {
-    flexDirection: "row",
-    justifyContent: "flex-end",
-    marginTop: 4,
-  },
   date: {
     fontSize: 14,
     color: "#666",
@@ -276,9 +292,19 @@ const styles = StyleSheet.create({
   income: {
     color: "#0275d8",
   },
-  deleteText: {
+  rightAction: {
+    backgroundColor: "#d9534f",
+    justifyContent: "center",
+    alignItems: "center",
+    width: 90,
+    marginBottom: 10,
+    borderRadius: 10,
+    marginRight: 16,
+  },
+  rightActionText: {
+    color: "#fff",
     fontSize: 14,
-    color: "#d9534f",
+    marginTop: 4,
     fontWeight: "bold",
   },
 });
