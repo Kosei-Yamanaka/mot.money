@@ -3,13 +3,13 @@ import { Tabs } from "expo-router";
 
 export default function TabLayout() {
   return (
-    <Tabs screenOptions={{ headerShown: false }}>
+    <Tabs screenOptions={{ headerShown: true }}>
       <Tabs.Screen
         name="index"
         options={{
           title: "入力",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="create-outline" color={color} size={size} />
+            <Ionicons name="home" size={size} color={color} />
           ),
         }}
       />
@@ -18,10 +18,20 @@ export default function TabLayout() {
         options={{
           title: "履歴",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="time-outline" color={color} size={size} />
+            <Ionicons name="list" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="calendar"
+        options={{
+          title: "カレンダー",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="calendar" size={size} color={color} />
           ),
         }}
       />
     </Tabs>
   );
 }
+
