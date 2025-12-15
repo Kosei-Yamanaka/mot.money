@@ -2,8 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
 import {
+  Alert,
   FlatList,
-  Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -17,162 +17,169 @@ type Mode = "expense" | "income";
 
 type RecordItem = {
   id: string;
-  date: string; // "YYYY/M/D"
+  date: string; // "YYYY/M/D"（君のIndexがこう保存してる）
   mode: Mode;
-  store: string;
+  store: string; // カテゴリ名
   displayAmount: string;
   actualAmount: number;
-  createdAt: string;
+  createdAt: string; // ISO
 };
 
 function pad2(n: number) {
   return n < 10 ? `0${n}` : `${n}`;
 }
-function ymdKey(d: Date) {
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-function parseRecordDate(r: RecordItem): Date {
-  const t = Date.parse(r.createdAt);
-  if (!Number.isNaN(t)) return new Date(t);
 
-  const m = r.date?.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
-  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return new Date();
+function ymd(d: Date) {
+  // "YYYY/M/D" で統一（IndexのdateLabelと合わせる）
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
 }
-function yen(n: number) {
-  const v = Math.trunc(Number(n) || 0);
+
+function sameYMD(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function formatYen(n: number) {
+  const v = Number(n) || 0;
   return v.toLocaleString("ja-JP");
 }
-function monthStart(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth(), 1);
-}
-function monthEnd(d: Date) {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
-}
 
-/**
- * ✅ kをやめて、日本語で短縮（万/億）
- * - 1234 -> 1,234
- * - 58050 -> 5.8万
- * - 258800 -> 25.9万
- * - 123000000 -> 1.2億
- */
-function shortJa(n: number) {
-  const vAbs = Math.abs(Math.trunc(Number(n) || 0));
-  const sign = n < 0 ? "-" : "";
-
-  if (vAbs >= 100_000_000) {
-    const o = (vAbs / 100_000_000).toFixed(1).replace(/\.0$/, "");
-    return `${sign}${o}億`;
-  }
-  if (vAbs >= 10_000) {
-    const m = (vAbs / 10_000).toFixed(1).replace(/\.0$/, "");
-    return `${sign}${m}万`;
-  }
-  return `${sign}${yen(vAbs)}`;
+function amountFontSizeByDigits(formatted: string) {
+  // 例: "30,000" みたいな文字列長で段階的に小さく
+  const len = formatted.length;
+  if (len >= 9) return 7;  // "1,234,567" 以上
+  if (len >= 7) return 8;  // "123,456" くらい
+  return 9;                // それ以下
 }
 
 export default function CalendarScreen() {
-  const [cursor, setCursor] = useState<Date>(() => new Date());
   const [records, setRecords] = useState<RecordItem[]>([]);
-  const [selectedYmd, setSelectedYmd] = useState<string>(() => ymdKey(new Date()));
+  const [currentMonth, setCurrentMonth] = useState<Date>(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
+  const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
 
   const load = useCallback(async () => {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    const arr: RecordItem[] = raw ? JSON.parse(raw) : [];
-    setRecords(Array.isArray(arr) ? arr : []);
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      const arr: RecordItem[] = raw ? JSON.parse(raw) : [];
+      setRecords(Array.isArray(arr) ? arr : []);
+    } catch (e) {
+      console.error(e);
+      setRecords([]);
+    }
   }, []);
 
-  // ✅「保存したのに反映されない」対策：タブ復帰で必ず再読込
   useFocusEffect(
     useCallback(() => {
       load();
     }, [load])
   );
 
-  const headerLabel = useMemo(
-    () => `${cursor.getFullYear()}年 ${cursor.getMonth() + 1}月`,
-    [cursor]
-  );
-
+  // 月移動
   const moveMonth = (delta: number) => {
-    setCursor((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+    setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
   };
 
-  // 日別集計
-  const dayAgg = useMemo(() => {
-    const map = new Map<string, { income: number; expense: number; items: RecordItem[] }>();
-
-    for (const r of records) {
-      const d = parseRecordDate(r);
-      const key = ymdKey(d);
-
-      if (!map.has(key)) map.set(key, { income: 0, expense: 0, items: [] });
-      const obj = map.get(key)!;
-
-      if (r.mode === "income") obj.income += Number(r.actualAmount) || 0;
-      else obj.expense += Number(r.actualAmount) || 0;
-
-      obj.items.push(r);
+  // createdAt を使って日付判定（date文字列より安全）
+  const recordDateObj = useCallback((r: RecordItem) => {
+    const d = new Date(r.createdAt);
+    if (Number.isNaN(d.getTime())) {
+      // createdAtが壊れてたら date をパース（フォールバック）
+      // "YYYY/M/D"
+      const [Y, M, D] = (r.date || "").split("/").map((x) => parseInt(x, 10));
+      if (!Y || !M || !D) return new Date();
+      return new Date(Y, M - 1, D);
     }
+    return d;
+  }, []);
 
-    for (const [, v] of map) {
-      v.items.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
-    }
+  // 月内のレコード
+  const monthRecords = useMemo(() => {
+    const y = currentMonth.getFullYear();
+    const m = currentMonth.getMonth();
+    return records.filter((r) => {
+      const d = recordDateObj(r);
+      return d.getFullYear() === y && d.getMonth() === m;
+    });
+  }, [records, currentMonth, recordDateObj]);
+
+  // 今月の合計
+  const monthIncome = useMemo(() => {
+    return monthRecords
+      .filter((r) => r.mode === "income")
+      .reduce((s, r) => s + (Number(r.actualAmount) || 0), 0);
+  }, [monthRecords]);
+
+  const monthExpense = useMemo(() => {
+    return monthRecords
+      .filter((r) => r.mode === "expense")
+      .reduce((s, r) => s + (Number(r.actualAmount) || 0), 0);
+  }, [monthRecords]);
+
+  const monthBalance = useMemo(() => monthIncome - monthExpense, [monthIncome, monthExpense]);
+
+  // 累計残高（全期間）
+  const totalBalance = useMemo(() => {
+    let inc = 0;
+    let exp = 0;
+    records.forEach((r) => {
+      const a = Number(r.actualAmount) || 0;
+      if (r.mode === "income") inc += a;
+      else exp += a;
+    });
+    return inc - exp;
+  }, [records]);
+
+  // 選択日の明細
+  const selectedRecords = useMemo(() => {
+    return records
+      .filter((r) => sameYMD(recordDateObj(r), selectedDate))
+      .sort((a, b) => {
+        // 新しい順（idがDate.now想定）
+        const na = Number(a.id) || 0;
+        const nb = Number(b.id) || 0;
+        return nb - na;
+      });
+  }, [records, selectedDate, recordDateObj]);
+
+  // 日別集計Map（表示高速化）
+  const daySumMap = useMemo(() => {
+    // key = "YYYY/M/D" → {inc, exp}
+    const map = new Map<string, { inc: number; exp: number }>();
+    monthRecords.forEach((r) => {
+      const d = recordDateObj(r);
+      const key = ymd(d);
+      const cur = map.get(key) || { inc: 0, exp: 0 };
+      const a = Number(r.actualAmount) || 0;
+      if (r.mode === "income") cur.inc += a;
+      else cur.exp += a;
+      map.set(key, cur);
+    });
     return map;
-  }, [records]);
+  }, [monthRecords, recordDateObj]);
 
-  const monthAgg = useMemo(() => {
-    const s = monthStart(cursor);
-    const e = monthEnd(cursor);
-    let income = 0;
-    let expense = 0;
-
-    for (const r of records) {
-      const d = parseRecordDate(r);
-      if (d >= s && d <= e) {
-        if (r.mode === "income") income += Number(r.actualAmount) || 0;
-        else expense += Number(r.actualAmount) || 0;
-      }
-    }
-    return { income, expense, net: income - expense };
-  }, [records, cursor]);
-
-  const totalAgg = useMemo(() => {
-    let income = 0;
-    let expense = 0;
-    for (const r of records) {
-      if (r.mode === "income") income += Number(r.actualAmount) || 0;
-      else expense += Number(r.actualAmount) || 0;
-    }
-    return { income, expense, net: income - expense };
-  }, [records]);
-
-  const selectedItems = useMemo(
-    () => dayAgg.get(selectedYmd)?.items ?? [],
-    [dayAgg, selectedYmd]
-  );
-
-  // カレンダーセル（42マス固定）
+  // カレンダー用配列（42マス）
   const cells = useMemo(() => {
-    const s = monthStart(cursor);
-    const e = monthEnd(cursor);
+    const y = currentMonth.getFullYear();
+    const m = currentMonth.getMonth();
+    const first = new Date(y, m, 1);
+    const firstDay = first.getDay(); // 0:日
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
 
-    const startDow = s.getDay();
-    const daysInMonth = e.getDate();
-
-    const arr: Array<{ kind: "blank" } | { kind: "day"; day: number; key: string }> = [];
-
-    for (let i = 0; i < startDow; i++) arr.push({ kind: "blank" });
-    for (let day = 1; day <= daysInMonth; day++) {
-      const d = new Date(cursor.getFullYear(), cursor.getMonth(), day);
-      arr.push({ kind: "day", day, key: ymdKey(d) });
-    }
-    while (arr.length < 42) arr.push({ kind: "blank" });
+    const arr: Array<{ day: number | null; dateObj: Date | null }> = [];
+    for (let i = 0; i < firstDay; i++) arr.push({ day: null, dateObj: null });
+    for (let d = 1; d <= daysInMonth; d++) arr.push({ day: d, dateObj: new Date(y, m, d) });
+    while (arr.length < 42) arr.push({ day: null, dateObj: null });
     return arr;
-  }, [cursor]);
+  }, [currentMonth]);
 
-  const deleteRecord = useCallback(
+  // 削除
+  const deleteItem = useCallback(
     async (id: string) => {
       const next = records.filter((r) => r.id !== id);
       setRecords(next);
@@ -181,60 +188,73 @@ export default function CalendarScreen() {
     [records]
   );
 
+  const confirmDelete = useCallback(
+    (id: string) => {
+      Alert.alert("削除", "この明細を削除する？", [
+        { text: "キャンセル", style: "cancel" },
+        { text: "削除", style: "destructive", onPress: () => deleteItem(id) },
+      ]);
+    },
+    [deleteItem]
+  );
+
   const renderRightActions = (id: string) => (
-    <TouchableOpacity style={styles.deleteBtn} activeOpacity={0.85} onPress={() => deleteRecord(id)}>
+    <TouchableOpacity
+      style={styles.deleteBtn}
+      onPress={() => confirmDelete(id)}
+      activeOpacity={0.85}
+    >
       <Text style={styles.deleteTxt}>削除</Text>
     </TouchableOpacity>
   );
 
   const renderDetailItem = ({ item }: { item: RecordItem }) => {
-    const sign = item.mode === "income" ? "+" : "-";
-    const amt = Math.abs(Number(item.actualAmount) || 0);
+    const isIncome = item.mode === "income";
+    const amountText = `${isIncome ? "+" : "-"}${formatYen(item.actualAmount)}円`;
 
     return (
       <Swipeable renderRightActions={() => renderRightActions(item.id)}>
         <View style={styles.detailRow}>
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={styles.detailTitle} numberOfLines={1}>
-              {item.store}
-            </Text>
-            <Text style={styles.detailSub} numberOfLines={1}>
-              {item.date}
-            </Text>
+          <View style={{ flex: 1 }}>
+            {/* 日付は出さない（上に書いてあるから） */}
+            <Text style={styles.detailTitle}>{item.store || "未分類"}</Text>
           </View>
-          <Text style={[styles.detailAmount, item.mode === "income" ? styles.green : styles.red]} numberOfLines={1}>
-            {sign}
-            {yen(amt)}円
+          <Text style={[styles.detailAmount, isIncome ? styles.green : styles.red]}>
+            {amountText}
           </Text>
         </View>
       </Swipeable>
     );
   };
 
+  const today = new Date();
+
   return (
     <View style={styles.container}>
-      {/* 月ヘッダー（余白詰め） */}
+      {/* 月ヘッダー */}
       <View style={styles.monthHeader}>
         <TouchableOpacity style={styles.navBtn} onPress={() => moveMonth(-1)}>
           <Text style={styles.navTxt}>◀</Text>
         </TouchableOpacity>
 
-        <Text style={styles.monthTitle}>{headerLabel}</Text>
+        <Text style={styles.monthTitle}>
+          {currentMonth.getFullYear()}年 {currentMonth.getMonth() + 1}月
+        </Text>
 
         <TouchableOpacity style={styles.navBtn} onPress={() => moveMonth(1)}>
           <Text style={styles.navTxt}>▶</Text>
         </TouchableOpacity>
       </View>
 
-      {/* 曜日（さらに小さめ） */}
+      {/* 曜日 */}
       <View style={styles.weekRow}>
-        {["日", "月", "火", "水", "木", "金", "土"].map((w, i) => (
+        {["日", "月", "火", "水", "木", "金", "土"].map((w, idx) => (
           <Text
             key={w}
             style={[
               styles.weekTxt,
-              i === 0 && { color: "#d44" },
-              i === 6 && { color: "#2b66ff" },
+              idx === 0 && { color: "#C23B3B" },
+              idx === 6 && { color: "#2B66FF" },
             ]}
           >
             {w}
@@ -242,88 +262,121 @@ export default function CalendarScreen() {
         ))}
       </View>
 
-      {/* カレンダー（縦さらに圧縮） */}
+      {/* カレンダー */}
       <View style={styles.grid}>
         {cells.map((c, idx) => {
-          if (c.kind === "blank") {
-            return <View key={`b-${idx}`} style={[styles.cell, styles.cellBlank]} />;
+          if (!c.day || !c.dateObj) {
+            return <View key={idx} style={[styles.cell, styles.cellBlank]} />;
           }
 
-          const agg = dayAgg.get(c.key);
-          const income = agg?.income ?? 0;
-          const expense = agg?.expense ?? 0;
+          const key = ymd(c.dateObj);
+          const sums = daySumMap.get(key) || { inc: 0, exp: 0 };
 
-          const isSelected = c.key === selectedYmd;
+          const isSelected = sameYMD(c.dateObj, selectedDate);
+          const isToday = sameYMD(c.dateObj, today);
+
+          const incText = sums.inc > 0 ? `+${formatYen(sums.inc)}` : "";
+          const expText = sums.exp > 0 ? `-${formatYen(sums.exp)}` : "";
+
+          const incFont = incText ? amountFontSizeByDigits(incText) : 9;
+          const expFont = expText ? amountFontSizeByDigits(expText) : 9;
 
           return (
-            <Pressable
-              key={c.key}
-              style={[styles.cell, isSelected && styles.cellSelected]}
-              onPress={() => setSelectedYmd(c.key)}
+            <TouchableOpacity
+              key={idx}
+              activeOpacity={0.85}
+              onPress={() => setSelectedDate(c.dateObj!)}
+              style={[
+                styles.cell,
+                isToday && styles.cellToday,
+                isSelected && styles.cellSelected,
+              ]}
             >
-              {/* ③ 日付の文字を小さく */}
-              <Text style={styles.dayNum} numberOfLines={1}>{c.day}</Text>
+              <Text style={styles.dayNum}>{c.day}</Text>
 
-              {/* ③ 収入/支出を両方入れやすくする（さらに小さく） */}
-              {expense > 0 && (
-                <Text style={[styles.amountTiny, styles.red]} numberOfLines={1}>
-                  {shortJa(-expense)}
+              {/* 収入 */}
+              {incText ? (
+                <Text
+                  style={[
+                    styles.amountTiny,
+                    styles.green,
+                    { fontSize: incFont },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {incText}
                 </Text>
-              )}
-              {income > 0 && (
-                <Text style={[styles.amountTiny, styles.green]} numberOfLines={1}>
-                  {shortJa(income)}
+              ) : null}
+
+              {/* 支出 */}
+              {expText ? (
+                <Text
+                  style={[
+                    styles.amountTiny,
+                    styles.red,
+                    { fontSize: expFont },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {expText}
                 </Text>
-              )}
-            </Pressable>
+              ) : null}
+            </TouchableOpacity>
           );
         })}
       </View>
 
-      {/* ② カレンダー下の余白を詰める：marginTopを激減 */}
+      {/* 今月まとめ */}
       <View style={styles.summaryCard}>
         <Text style={styles.summaryTitle}>今月</Text>
 
         <View style={styles.summaryRow}>
           <Text style={styles.summaryLabel}>収入</Text>
-          <Text style={[styles.summaryValue, styles.green]}>+{yen(monthAgg.income)}円</Text>
+          <Text style={[styles.summaryValue, styles.green]}>
+            +{formatYen(monthIncome)}円
+          </Text>
         </View>
 
         <View style={styles.summaryRow}>
           <Text style={styles.summaryLabel}>支出</Text>
-          <Text style={[styles.summaryValue, styles.red]}>-{yen(monthAgg.expense)}円</Text>
+          <Text style={[styles.summaryValue, styles.red]}>
+            -{formatYen(monthExpense)}円
+          </Text>
         </View>
 
         <View style={styles.hr} />
 
         <View style={styles.summaryRow}>
-          <Text style={[styles.summaryLabel, { fontWeight: "900" }]}>残高</Text>
-          <Text style={styles.summaryValue}>{yen(monthAgg.net)}円</Text>
+          <Text style={styles.summaryLabel}>残高</Text>
+          <Text style={styles.summaryValue}>
+            {monthBalance >= 0 ? "+" : ""}
+            {formatYen(monthBalance)}円
+          </Text>
         </View>
 
-        <View style={[styles.summaryRow, { marginTop: 2 }]}>
-          <Text style={[styles.summaryLabel, { fontWeight: "900" }]}>累計残高</Text>
-          <Text style={styles.summaryValue}>{yen(totalAgg.net)}円</Text>
+        {/* ✅ 累計残高（復活） */}
+        <View style={styles.summaryRow}>
+          <Text style={styles.summaryLabel}>累計残高</Text>
+          <Text style={styles.summaryValue}>
+            {totalBalance >= 0 ? "+" : ""}
+            {formatYen(totalBalance)}円
+          </Text>
         </View>
       </View>
 
-      {/* 選択日の詳細 */}
+      {/* 詳細 */}
       <View style={styles.detailArea}>
-        <Text style={styles.detailHeader}>
-          {selectedYmd.replaceAll("-", "/")} の詳細（スワイプで削除）
-        </Text>
+        <Text style={styles.detailHeader}>{ymd(selectedDate)} の詳細</Text>
 
-        {selectedItems.length === 0 ? (
-          <Text style={styles.detailEmpty}>この日はまだ記録がないよ</Text>
-        ) : (
+        {selectedRecords.length > 0 && (
           <FlatList
-            data={selectedItems}
-            keyExtractor={(i) => i.id}
-            renderItem={renderDetailItem}
-            contentContainerStyle={{ paddingBottom: 12 }}
+           data={selectedRecords}
+           keyExtractor={(i) => i.id}
+           renderItem={renderDetailItem}
+           contentContainerStyle={{ paddingBottom: 6 }}
           />
-        )}
-      </View>
+      )}
+     </View>
     </View>
   );
 }
@@ -335,7 +388,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#F6F1E3",
-    paddingTop: 0, // 画面上の無駄な余白を完全に削除
+    paddingTop: 0,
   },
 
   /* =========================
@@ -345,28 +398,24 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 40, // 横余白を少し詰める
-    paddingVertical: 2, // 縦を最小限に
+    paddingHorizontal: 40,
+    paddingVertical: 2,
   },
   monthTitle: {
     fontSize: 18,
     fontWeight: "900",
   },
-
   navBtn: {
     width: 40,
-    height: 26, // ボタンも縦圧縮
-    borderRadius: 9,
+    height: 26,
+    borderRadius: 10,
     backgroundColor: "white",
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#E8E1CF",
   },
-  navTxt: {
-    fontSize: 14,
-    fontWeight: "900",
-  },
+  navTxt: { fontSize: 14, fontWeight: "900" },
 
   /* =========================
      曜日行（日〜土）
@@ -374,14 +423,14 @@ const styles = StyleSheet.create({
   weekRow: {
     flexDirection: "row",
     paddingHorizontal: 6,
-    marginBottom: 1, // カレンダーとの隙間を極小化
+    marginBottom: 2,
   },
   weekTxt: {
     width: "14.285%",
     textAlign: "center",
     fontWeight: "900",
     color: "#222",
-    fontSize: 10, // 曜日も小さめ
+    fontSize: 10,
   },
 
   /* =========================
@@ -391,51 +440,47 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     paddingHorizontal: 6,
-    paddingBottom: 0, // カレンダー下の余白を削る
+    marginBottom: 4,
   },
 
   /* =========================
-     日付セル（最重要）
+     日付セル
   ========================= */
   cell: {
     width: "14.285%",
-    height: 28, // ★超重要：縦を大幅圧縮
-    borderRadius: 9,
+    height: 39, // ←「もう少しだけ縦長」ここ
+    borderRadius: 3, // ← 角丸を四角寄りに
     backgroundColor: "white",
     borderWidth: 1,
     borderColor: "#E8E1CF",
-    marginBottom: 4, // 行間を詰める
-    paddingTop: 2, // 中の余白も削る
+    marginBottom: 4,
+    paddingTop: 2,
     paddingHorizontal: 3,
   },
+  cellBlank: { backgroundColor: "transparent", borderWidth: 0 },
 
-  cellBlank: {
-    backgroundColor: "transparent",
-    borderWidth: 0,
-  },
+  // 選択中の日
+  cellSelected: { borderColor: "#2B66FF", borderWidth: 2 },
 
-  cellSelected: {
-    borderColor: "#2B66FF",
-    borderWidth: 2,
-  },
+  // 今日（うっすら色）
+  cellToday: { backgroundColor: "#EAF0FF" },
 
   /* =========================
-     日付数字（1,2,3...）
+     日付数字
   ========================= */
   dayNum: {
-    fontSize: 9, // 日付を小さく
+    fontSize: 10,
     fontWeight: "900",
     color: "#222",
-    lineHeight: 9, // 行高さを詰める
+    lineHeight: 12,
   },
 
   /* =========================
-     金額（収入・支出）
+     金額（セル内）
   ========================= */
   amountTiny: {
-    fontSize: 7, // 2行入る最小サイズ
     fontWeight: "900",
-    lineHeight: 8,
+    lineHeight: 11,
     marginTop: 0,
   },
 
@@ -443,126 +488,71 @@ const styles = StyleSheet.create({
      今月まとめカード
   ========================= */
   summaryCard: {
-    marginTop: 0, // ★カレンダー直下の余白を削減
+    marginTop: 0,
     marginHorizontal: 12,
     backgroundColor: "white",
     borderRadius: 14,
-    padding: 10, // カード自体を薄く
+    padding: 12,
     borderWidth: 1,
     borderColor: "#E8E1CF",
   },
-
-  summaryTitle: {
-    fontSize: 14,
-    fontWeight: "900",
-    marginBottom: 6,
-  },
-
+  summaryTitle: { fontSize: 15, fontWeight: "900", marginBottom: 8 },
   summaryRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 4, // 行間を詰める
+    marginBottom: 6,
   },
-
-  summaryLabel: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#222",
-  },
-
-  summaryValue: {
-    fontSize: 14,
-    fontWeight: "900",
-    color: "#222",
-  },
-
-  hr: {
-    height: 1,
-    backgroundColor: "#EFE7D7",
-    marginVertical: 5, // 仕切り線の上下余白を縮小
-  },
+  summaryLabel: { fontSize: 13, fontWeight: "700", color: "#222" },
+  summaryValue: { fontSize: 15, fontWeight: "900", color: "#222" },
+  hr: { height: 1, backgroundColor: "#EFE7D7", marginVertical: 8 },
 
   /* =========================
-     日付詳細エリア
+     詳細エリア
   ========================= */
   detailArea: {
     flex: 1,
-    marginTop: 4, // summaryとの隙間を最小化
+    marginTop: 8,
     marginHorizontal: 12,
     backgroundColor: "white",
     borderRadius: 14,
-    padding: 10,
+    padding: 12,
     borderWidth: 1,
     borderColor: "#E8E1CF",
   },
+  detailHeader: { fontSize: 15, fontWeight: "900", marginBottom: 10 },
+  detailEmpty: { color: "#666", fontWeight: "700" },
 
-  detailHeader: {
-    fontSize: 13,
-    fontWeight: "900",
-    marginBottom: 6,
-  },
-
-  detailEmpty: {
-    color: "#666",
-    fontWeight: "700",
-    fontSize: 12,
-  },
-
-  /* =========================
-     明細行（スワイプ削除対象）
-  ========================= */
   detailRow: {
     backgroundColor: "#fff",
     borderRadius: 12,
-    paddingVertical: 8, // 高さを抑える
-    paddingHorizontal: 10,
-    marginBottom: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 10,
     flexDirection: "row",
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#EFE7D7",
   },
-
-  detailTitle: {
-    fontSize: 13,
-    fontWeight: "900",
-    color: "#222",
-  },
-
-  detailSub: {
-    marginTop: 2,
-    color: "#666",
-    fontSize: 11,
-    fontWeight: "700",
-  },
-
-  detailAmount: {
-    fontSize: 13,
-    fontWeight: "900",
-  },
+  detailTitle: { fontSize: 15, fontWeight: "900", color: "#222" },
+  detailAmount: { fontSize: 15, fontWeight: "900" },
 
   /* =========================
-     削除ボタン（スワイプ）
+     スワイプ削除ボタン
   ========================= */
   deleteBtn: {
-    width: 80,
-    marginBottom: 8,
+    width: 90,
+    marginBottom: 10,
     borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#FF4D4D",
   },
-
-  deleteTxt: {
-    color: "white",
-    fontWeight: "900",
-    fontSize: 13,
-  },
+  deleteTxt: { color: "white", fontWeight: "900" },
 
   /* =========================
-     色ユーティリティ
+     色
   ========================= */
-  red: { color: "#C23B3B" }, // 支出
-  green: { color: "#1F7A43" }, // 収入
+  red: { color: "#C23B3B" },
+  green: { color: "#1F7A43" },
 });
