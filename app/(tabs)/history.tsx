@@ -1,7 +1,8 @@
-import { Ionicons } from "@expo/vector-icons";
+// app/(tabs)/history.tsx
+
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "expo-router";
-import { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -11,300 +12,342 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import {
-  GestureHandlerRootView,
-  Swipeable,
-} from "react-native-gesture-handler";
 
+import { GestureHandlerRootView, Swipeable } from "react-native-gesture-handler";
+
+import { arc as d3arc, pie as d3pie } from "d3-shape";
+import Svg, { G, Path, Text as SvgText } from "react-native-svg";
+
+// ✅ index.tsx と同じキーにする
 const STORAGE_KEY = "records";
 
 type Mode = "expense" | "income";
 
 type RecordItem = {
   id: string;
-  date: string;          // "12/11" みたいな文字列
+  date: string; // "YYYY/M/D"
   mode: Mode;
-  store: string;
-  displayAmount: string; // 表示用
-  actualAmount?: number;
-  createdAt?: string;
-};
-
-type Summary = {
-  monthLabel: string; // "2025/12"
-  income: number;
-  expense: number;
-  balance: number;
+  store: string; // カテゴリ名
+  displayAmount: string;
+  actualAmount: number;
+  createdAt: string;
 };
 
 export default function History() {
-  const [records, setRecords] = useState<RecordItem[]>([]);
+  const [items, setItems] = useState<RecordItem[]>([]);
   const [refreshing, setRefreshing] = useState(false);
-  const [summary, setSummary] = useState<Summary | null>(null);
+  const [mode, setMode] = useState<Mode>("expense");
 
-  const calcSummary = (list: RecordItem[]) => {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1; // 1〜12
-
-    const monthPrefix = `${month}/`; // "12/"
-
-    const thisMonth = list.filter((item) =>
-      item.date?.startsWith(monthPrefix)
-    );
-
-    const income = thisMonth
-      .filter((r) => r.mode === "income")
-      .reduce((sum, r) => sum + (r.actualAmount ?? 0), 0);
-
-    const expense = thisMonth
-      .filter((r) => r.mode === "expense")
-      .reduce((sum, r) => sum + (r.actualAmount ?? 0), 0);
-
-    const balance = income - expense;
-
-    setSummary({
-      monthLabel: `${year}/${month}`,
-      income,
-      expense,
-      balance,
-    });
-  };
-
-  const loadRecords = async () => {
+  const load = useCallback(async () => {
     try {
-      const json = await AsyncStorage.getItem(STORAGE_KEY);
-      const list: RecordItem[] = json ? JSON.parse(json) : [];
-      setRecords(list);
-      calcSummary(list);
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      const arr: RecordItem[] = raw ? JSON.parse(raw) : [];
+      setItems(Array.isArray(arr) ? arr : []);
     } catch (e) {
       console.error(e);
+      setItems([]);
     }
-  };
+  }, []);
 
+  // ✅ タブを開くたびに読み直す（これで即反映）
   useFocusEffect(
     useCallback(() => {
-      loadRecords();
-    }, [])
+      load();
+    }, [load])
   );
 
-  const onRefresh = async () => {
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadRecords();
-    setRefreshing(false);
-  };
-
-  const formatYen = (value: number) =>
-    value.toLocaleString("ja-JP", { maximumFractionDigits: 0 });
-
-  const reallyDelete = async (id: string) => {
     try {
-      const newList = records.filter((r) => r.id !== id);
-      setRecords(newList);
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(newList));
-      calcSummary(newList);
-    } catch (e) {
-      console.error(e);
+      await load();
+    } finally {
+      setRefreshing(false);
     }
-  };
+  }, [load]);
 
-  const handleDelete = (id: string) => {
-    Alert.alert("削除確認", "この記録を削除しますか？", [
-      { text: "キャンセル", style: "cancel" },
-      {
-        text: "削除",
-        style: "destructive",
-        onPress: () => reallyDelete(id),
-      },
-    ]);
-  };
+  const filtered = useMemo(
+    () => items.filter((r) => r.mode === mode),
+    [items, mode]
+  );
 
-  const renderRightActions = (id: string) => {
-    return (
-      <TouchableOpacity
-        style={styles.rightAction}
-        onPress={() => handleDelete(id)}
-        activeOpacity={0.8}
-      >
-        <Ionicons name="trash-outline" size={22} color="#fff" />
-        <Text style={styles.rightActionText}>削除</Text>
-      </TouchableOpacity>
-    );
-  };
+  const total = useMemo(
+    () => filtered.reduce((s, r) => s + (Number(r.actualAmount) || 0), 0),
+    [filtered]
+  );
+
+  const byCategory = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of filtered) {
+      const key = (r.store || "未分類").trim();
+      map.set(key, (map.get(key) || 0) + (Number(r.actualAmount) || 0));
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  }, [filtered]);
+
+  const top = useMemo(() => {
+    const TOP_N = 6;
+    const main = byCategory.slice(0, TOP_N);
+    const rest = byCategory.slice(TOP_N);
+    const restSum = rest.reduce((s, [, v]) => s + v, 0);
+    if (restSum > 0) main.push(["その他", restSum]);
+    return main;
+  }, [byCategory]);
+
+  const pieData = useMemo(() => {
+    return top.map(([label, value], idx) => ({
+      label,
+      value,
+      color: COLORS[idx % COLORS.length],
+    }));
+  }, [top]);
+
+  const deleteItem = useCallback(
+    async (id: string) => {
+      const next = items.filter((x) => x.id !== id);
+      setItems(next);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    },
+    [items]
+  );
+
+  const confirmDelete = useCallback(
+    (id: string) => {
+      Alert.alert("削除", "この履歴を削除する？", [
+        { text: "キャンセル", style: "cancel" },
+        { text: "削除", style: "destructive", onPress: () => deleteItem(id) },
+      ]);
+    },
+    [deleteItem]
+  );
+
+  const renderRightActions = (id: string) => (
+    <TouchableOpacity
+      style={styles.deleteBtn}
+      onPress={() => confirmDelete(id)}
+      activeOpacity={0.85}
+    >
+      <Text style={styles.deleteTxt}>削除</Text>
+    </TouchableOpacity>
+  );
 
   const renderItem = ({ item }: { item: RecordItem }) => {
-    const isExpense = item.mode === "expense";
     return (
-      <Swipeable
-        renderRightActions={() => renderRightActions(item.id)}
-        onSwipeableOpen={() => handleDelete(item.id)} // 最後までスワイプで削除確認
-      >
-        <View style={styles.item}>
-          <View style={styles.itemRow}>
-            <Text style={styles.date}>{item.date}</Text>
-            <Text
-              style={[styles.mode, isExpense ? styles.expense : styles.income]}
-            >
-              {isExpense ? "支出" : "収入"}
-            </Text>
+      <Swipeable renderRightActions={() => renderRightActions(item.id)}>
+        <View style={styles.row}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rowTitle}>{item.store || "未分類"}</Text>
+            <Text style={styles.rowSub}>{item.date || ""}</Text>
           </View>
-          <View style={styles.itemRow}>
-            <Text style={styles.store}>{item.store}</Text>
-            <Text
-              style={[
-                styles.amount,
-                isExpense ? styles.expense : styles.income,
-              ]}
-            >
-              {item.displayAmount} 円
-            </Text>
-          </View>
+          <Text style={styles.rowAmount}>{formatYen(item.actualAmount)}円</Text>
         </View>
       </Swipeable>
     );
   };
 
   return (
-    <GestureHandlerRootView style={styles.container}>
-      {/* 今月サマリー */}
-      {summary && (
-        <View style={styles.summaryBox}>
-          <Text style={styles.summaryTitle}>
-            {summary.monthLabel} のまとめ
-          </Text>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>収入合計</Text>
-            <Text style={[styles.summaryValue, styles.income]}>
-              {formatYen(summary.income)} 円
-            </Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>支出合計</Text>
-            <Text style={[styles.summaryValue, styles.expense]}>
-              {formatYen(summary.expense)} 円
-            </Text>
-          </View>
-          <View style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>残高</Text>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <View style={styles.container}>
+        {/* タブ切り替え */}
+        <View style={styles.switchRow}>
+          <TouchableOpacity
+            style={[
+              styles.switchBtn,
+              mode === "expense" && styles.switchActive,
+            ]}
+            onPress={() => setMode("expense")}
+          >
             <Text
               style={[
-                styles.summaryValue,
-                summary.balance >= 0 ? styles.income : styles.expense,
+                styles.switchTxt,
+                mode === "expense" && styles.switchTxtActive,
               ]}
             >
-              {formatYen(summary.balance)} 円
+              支出
             </Text>
-          </View>
-        </View>
-      )}
+          </TouchableOpacity>
 
-      {/* 履歴 */}
-      {records.length === 0 ? (
-        <View style={styles.emptyBox}>
-          <Text style={styles.emptyText}>まだ記録がありません</Text>
+          <TouchableOpacity
+            style={[
+              styles.switchBtn,
+              mode === "income" && styles.switchActive,
+            ]}
+            onPress={() => setMode("income")}
+          >
+            <Text
+              style={[
+                styles.switchTxt,
+                mode === "income" && styles.switchTxtActive,
+              ]}
+            >
+              収入
+            </Text>
+          </TouchableOpacity>
         </View>
-      ) : (
+
+        {/* 円グラフ */}
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>
+            {mode === "expense" ? "支出" : "収入"}（合計 {formatYen(total)}円）
+          </Text>
+
+          {total === 0 ? (
+            <Text style={styles.empty}>まだデータがないよ</Text>
+          ) : (
+            <PieChart pieData={pieData} total={total} />
+          )}
+
+          {/* 凡例 */}
+          {total > 0 &&
+            pieData.map((p) => (
+              <View key={p.label} style={styles.legendRow}>
+                <View style={[styles.dot, { backgroundColor: p.color }]} />
+                <Text style={styles.legendLabel}>{p.label}</Text>
+                <Text style={styles.legendValue}>
+                  {formatYen(p.value)}円（{Math.round((p.value / total) * 100)}%）
+                </Text>
+              </View>
+            ))}
+        </View>
+
+        {/* リスト */}
+        <Text style={styles.listTitle}>履歴</Text>
         <FlatList
-          data={records}
-          keyExtractor={(item) => item.id}
+          data={filtered}
+          keyExtractor={(i) => i.id}
           renderItem={renderItem}
-          contentContainerStyle={{ paddingBottom: 20, paddingHorizontal: 16 }}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
+          contentContainerStyle={{ paddingBottom: 24 }}
         />
-      )}
+      </View>
     </GestureHandlerRootView>
   );
 }
 
+function PieChart({
+  pieData,
+  total,
+}: {
+  pieData: { label: string; value: number; color: string }[];
+  total: number;
+}) {
+  const size = 220;
+  const radius = size / 2;
+
+  const arcs = useMemo(() => {
+    const p = d3pie<{ label: string; value: number; color: string }>()
+      .value((d) => d.value)
+      .sort(null);
+
+    const a = d3arc<any>().innerRadius(radius * 0.55).outerRadius(radius * 0.95);
+
+    return p(pieData).map((d: any) => ({
+      path: a(d),
+      color: d.data.color,
+    }));
+  }, [pieData, radius]);
+
+  return (
+    <View style={{ alignItems: "center", marginTop: 12 }}>
+      <Svg width={size} height={size}>
+        <G x={radius} y={radius}>
+          {arcs.map((s, idx) => (
+            <Path key={idx} d={s.path} fill={s.color} />
+          ))}
+
+          <SvgText
+            textAnchor="middle"
+            alignmentBaseline="middle"
+            fontSize="16"
+            fontWeight="700"
+          >
+            合計
+          </SvgText>
+          <SvgText
+            y={18}
+            textAnchor="middle"
+            alignmentBaseline="middle"
+            fontSize="16"
+            fontWeight="700"
+          >
+            {formatYen(total)}円
+          </SvgText>
+        </G>
+      </Svg>
+    </View>
+  );
+}
+
+function formatYen(n: number) {
+  const v = Number(n) || 0;
+  return v.toLocaleString("ja-JP");
+}
+
+const COLORS = [
+  "#4F7CFF",
+  "#FF6B6B",
+  "#4DCCBD",
+  "#FFD166",
+  "#A78BFA",
+  "#22C55E",
+  "#FB7185",
+];
+
 const styles = StyleSheet.create({
-  container: {
+  container: { flex: 1, padding: 16, backgroundColor: "#F6F1E3" },
+
+  switchRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  switchBtn: {
     flex: 1,
-    backgroundColor: "#f7f2de",
-    paddingTop: 40,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "#D8DFFB",
+    alignItems: "center",
   },
-  summaryBox: {
-    backgroundColor: "#fff",
+  switchActive: { backgroundColor: "#4F7CFF" },
+  switchTxt: { fontWeight: "700", color: "#2B2B2B" },
+  switchTxtActive: { color: "white" },
+
+  card: {
+    backgroundColor: "white",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#E9E3D3",
+  },
+  cardTitle: { fontSize: 16, fontWeight: "800" },
+  empty: { marginTop: 12, color: "#666" },
+
+  legendRow: { flexDirection: "row", alignItems: "center", marginTop: 8 },
+  dot: { width: 10, height: 10, borderRadius: 999, marginRight: 8 },
+  legendLabel: { flex: 1, fontWeight: "700" },
+  legendValue: { fontWeight: "700" },
+
+  listTitle: { fontSize: 16, fontWeight: "800", marginBottom: 8 },
+
+  row: {
+    backgroundColor: "white",
     borderRadius: 12,
     padding: 14,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    marginHorizontal: 16,
-  },
-  summaryTitle: {
-    fontSize: 16,
-    fontWeight: "bold",
-    marginBottom: 8,
-  },
-  summaryRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 4,
-  },
-  summaryLabel: {
-    fontSize: 14,
-  },
-  summaryValue: {
-    fontSize: 16,
-    fontWeight: "bold",
-  },
-  emptyBox: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  emptyText: {
-    fontSize: 16,
-    color: "#555",
-  },
-  item: {
-    backgroundColor: "#fff",
-    borderRadius: 10,
-    padding: 12,
     marginBottom: 10,
-  },
-  itemRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  date: {
-    fontSize: 14,
-    color: "#666",
-  },
-  mode: {
-    fontSize: 14,
-    fontWeight: "bold",
-  },
-  store: {
-    fontSize: 16,
-    marginTop: 4,
-  },
-  amount: {
-    fontSize: 18,
-    fontWeight: "bold",
-    marginTop: 4,
-  },
-  expense: {
-    color: "#d9534f",
-  },
-  income: {
-    color: "#0275d8",
-  },
-  rightAction: {
-    backgroundColor: "#d9534f",
-    justifyContent: "center",
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#EFE7D7",
+  },
+  rowTitle: { fontSize: 15, fontWeight: "800" },
+  rowSub: { marginTop: 4, color: "#666" },
+  rowAmount: { fontSize: 16, fontWeight: "900" },
+
+  deleteBtn: {
     width: 90,
     marginBottom: 10,
-    borderRadius: 10,
-    marginRight: 16,
+    borderRadius: 12,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#FF4D4D",
   },
-  rightActionText: {
-    color: "#fff",
-    fontSize: 14,
-    marginTop: 4,
-    fontWeight: "bold",
-  },
+  deleteTxt: { color: "white", fontWeight: "900" },
 });
