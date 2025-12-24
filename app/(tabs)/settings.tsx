@@ -1,17 +1,27 @@
+// app/(tabs)/settings.tsx
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 
-const CATEGORY_KEY = "categories";
+import { CHART_THEMES, ChartThemeId, THEME_LABEL } from "../constants/chartColors";
 
+/* =========================
+   Keys
+========================= */
+const CATEGORY_KEY = "categories";
+const THEME_KEY = "chart_theme";
+
+/* =========================
+   Types
+========================= */
 type Mode = "expense" | "income";
 
 type Category = {
@@ -20,6 +30,9 @@ type Category = {
   type: Mode;
 };
 
+/* =========================
+   Default categories
+========================= */
 const DEFAULT_CATEGORIES: Category[] = [
   { id: "exp_conv", name: "コンビニ", type: "expense" },
   { id: "exp_super", name: "スーパー", type: "expense" },
@@ -29,43 +42,74 @@ const DEFAULT_CATEGORIES: Category[] = [
   { id: "inc_other", name: "その他収入", type: "income" },
 ];
 
-export default function SettingsScreen() {
+export default function Settings() {
+  /* =========================
+     Category state
+  ========================= */
   const [categories, setCategories] = useState<Category[]>([]);
   const [newExpenseName, setNewExpenseName] = useState("");
   const [newIncomeName, setNewIncomeName] = useState("");
 
+  /* =========================
+     Theme state（グラフ色）
+  ========================= */
+  const [themeId, setThemeId] = useState<ChartThemeId>("pastel_blue");
+
+  /* =========================
+     Load categories
+  ========================= */
   useEffect(() => {
     (async () => {
       const json = await AsyncStorage.getItem(CATEGORY_KEY);
       if (!json) {
         setCategories(DEFAULT_CATEGORIES);
-        await AsyncStorage.setItem(
-          CATEGORY_KEY,
-          JSON.stringify(DEFAULT_CATEGORIES)
-        );
-      } else {
-        try {
-          const arr: Category[] = JSON.parse(json);
-          if (!Array.isArray(arr) || arr.length === 0) {
-            setCategories(DEFAULT_CATEGORIES);
-            await AsyncStorage.setItem(
-              CATEGORY_KEY,
-              JSON.stringify(DEFAULT_CATEGORIES)
-            );
-          } else {
-            setCategories(arr);
-          }
-        } catch {
+        await AsyncStorage.setItem(CATEGORY_KEY, JSON.stringify(DEFAULT_CATEGORIES));
+        return;
+      }
+      try {
+        const arr: Category[] = JSON.parse(json);
+        if (!Array.isArray(arr) || arr.length === 0) {
           setCategories(DEFAULT_CATEGORIES);
-          await AsyncStorage.setItem(
-            CATEGORY_KEY,
-            JSON.stringify(DEFAULT_CATEGORIES)
-          );
+          await AsyncStorage.setItem(CATEGORY_KEY, JSON.stringify(DEFAULT_CATEGORIES));
+        } else {
+          setCategories(arr);
         }
+      } catch {
+        setCategories(DEFAULT_CATEGORIES);
+        await AsyncStorage.setItem(CATEGORY_KEY, JSON.stringify(DEFAULT_CATEGORIES));
       }
     })();
   }, []);
 
+  /* =========================
+     Load theme
+  ========================= */
+  const loadTheme = useCallback(async () => {
+    const saved = await AsyncStorage.getItem(THEME_KEY);
+    if (saved && saved in CHART_THEMES) setThemeId(saved as ChartThemeId);
+  }, []);
+
+  useEffect(() => {
+    loadTheme();
+  }, [loadTheme]);
+
+  /* =========================
+     Save theme
+  ========================= */
+  const saveTheme = useCallback(async (id: ChartThemeId) => {
+    try {
+      await AsyncStorage.setItem(THEME_KEY, id);
+      setThemeId(id);
+      Alert.alert("保存しました", `グラフの色：${THEME_LABEL[id]}`);
+    } catch (e) {
+      console.error(e);
+      Alert.alert("エラー", "保存に失敗しました");
+    }
+  }, []);
+
+  /* =========================
+     Category helpers
+  ========================= */
   const saveCategories = async (list: Category[]) => {
     setCategories(list);
     await AsyncStorage.setItem(CATEGORY_KEY, JSON.stringify(list));
@@ -92,7 +136,6 @@ export default function SettingsScreen() {
       Alert.alert("最後のカテゴリは削除できません");
       return;
     }
-
     const updated = categories.filter((c) => c.id !== id);
     await saveCategories(updated);
   };
@@ -101,8 +144,44 @@ export default function SettingsScreen() {
   const incomeCategories = categories.filter((c) => c.type === "income");
 
   return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.title}>カテゴリ設定</Text>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 30 }}>
+      <Text style={styles.title}>設定</Text>
+
+      {/* =========================
+         グラフの色
+      ========================= */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>グラフの色</Text>
+
+        {(Object.keys(CHART_THEMES) as ChartThemeId[]).map((id) => {
+          const colors = CHART_THEMES[id];
+          const selected = themeId === id;
+
+          return (
+            <TouchableOpacity
+              key={id}
+              style={[styles.row, selected && styles.rowSelected]}
+              onPress={() => saveTheme(id)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.label, selected && styles.labelSelected]}>
+                {THEME_LABEL[id]}
+              </Text>
+
+              <View style={styles.swatches}>
+                {colors.slice(0, 6).map((c, i) => (
+                  <View key={i} style={[styles.swatch, { backgroundColor: c }]} />
+                ))}
+              </View>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* =========================
+         カテゴリ設定
+      ========================= */}
+      <Text style={styles.bigSectionTitle}>カテゴリ設定</Text>
 
       {/* 支出カテゴリ */}
       <View style={styles.section}>
@@ -126,10 +205,7 @@ export default function SettingsScreen() {
             value={newExpenseName}
             onChangeText={setNewExpenseName}
           />
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={() => addCategory("expense")}
-          >
+          <TouchableOpacity style={styles.addButton} onPress={() => addCategory("expense")}>
             <Text style={styles.addButtonText}>追加</Text>
           </TouchableOpacity>
         </View>
@@ -157,10 +233,7 @@ export default function SettingsScreen() {
             value={newIncomeName}
             onChangeText={setNewIncomeName}
           />
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={() => addCategory("income")}
-          >
+          <TouchableOpacity style={styles.addButton} onPress={() => addCategory("income")}>
             <Text style={styles.addButtonText}>追加</Text>
           </TouchableOpacity>
         </View>
@@ -176,74 +249,89 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f7f2de",
-    paddingTop: 40,
-    paddingHorizontal: 16,
+    backgroundColor: "#F6F1E3",
+    paddingTop: 14,
+    paddingHorizontal: 14,
   },
-  title: {
-    fontSize: 20,
-    fontWeight: "bold",
-    marginBottom: 12,
+
+  title: { fontSize: 18, fontWeight: "900", marginBottom: 12 },
+
+  card: {
+    backgroundColor: "white",
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#E8E1CF",
+    marginBottom: 16,
   },
+  cardTitle: { fontSize: 15, fontWeight: "900", marginBottom: 10 },
+
+  row: {
+    borderWidth: 1,
+    borderColor: "#EFE7D7",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  rowSelected: { borderColor: "#2B66FF", borderWidth: 2 },
+
+  label: { fontSize: 13, fontWeight: "900", color: "#222" },
+  labelSelected: { color: "#2B66FF" },
+
+  swatches: { flexDirection: "row", gap: 6 },
+  swatch: { width: 14, height: 14, borderRadius: 4, borderWidth: 1, borderColor: "#E8E1CF" },
+
+  bigSectionTitle: { fontSize: 16, fontWeight: "900", marginBottom: 10 },
+
   section: {
     backgroundColor: "#ffffff",
-    borderRadius: 12,
+    borderRadius: 14,
     padding: 12,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: "#dddddd",
+    borderColor: "#E8E1CF",
   },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: "bold",
-    marginBottom: 8,
-  },
+  sectionTitle: { fontSize: 14, fontWeight: "900", marginBottom: 8 },
+
   categoryRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingVertical: 4,
+    paddingVertical: 6,
   },
-  categoryName: {
-    fontSize: 15,
-  },
+  categoryName: { fontSize: 15, fontWeight: "700" },
+
   deleteButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     backgroundColor: "#ff8a80",
-    borderRadius: 8,
+    borderRadius: 10,
   },
-  deleteButtonText: {
-    color: "#fff",
-    fontWeight: "bold",
-    fontSize: 12,
-  },
-  addRow: {
-    flexDirection: "row",
-    marginTop: 8,
-  },
+  deleteButtonText: { color: "#fff", fontWeight: "900", fontSize: 12 },
+
+  addRow: { flexDirection: "row", marginTop: 10 },
   input: {
     flex: 1,
     backgroundColor: "#f5f5f5",
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
     marginRight: 8,
+    borderWidth: 1,
+    borderColor: "#EFE7D7",
   },
   addButton: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#2962ff",
-    borderRadius: 8,
+    borderRadius: 10,
   },
-  addButtonText: {
-    color: "#fff",
-    fontWeight: "bold",
-  },
-  note: {
-    fontSize: 12,
-    color: "#555",
-    marginBottom: 24,
-  },
+  addButtonText: { color: "#fff", fontWeight: "900" },
+
+  note: { fontSize: 12, color: "#555", marginBottom: 24, fontWeight: "700" },
 });
