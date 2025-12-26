@@ -1,61 +1,37 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "expo-router";
 import React, { useCallback, useMemo, useState } from "react";
-import {
-  Alert,
-  FlatList,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Swipeable } from "react-native-gesture-handler";
+import { useAppTheme } from "../../src/hooks/useAppTheme";
 
 const STORAGE_KEY = "records";
 
 type Mode = "expense" | "income";
-
 type RecordItem = {
   id: string;
-  date: string; // "YYYY/M/D"（君のIndexがこう保存してる）
+  date: string; // "YYYY/M/D"
   mode: Mode;
-  store: string; // カテゴリ名
+  store: string;
   displayAmount: string;
   actualAmount: number;
-  createdAt: string; // ISO
+  createdAt: string;
 };
 
-function pad2(n: number) {
-  return n < 10 ? `0${n}` : `${n}`;
-}
-
 function ymd(d: Date) {
-  // "YYYY/M/D" で統一（IndexのdateLabelと合わせる）
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
 }
-
 function sameYMD(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
-
 function formatYen(n: number) {
   const v = Number(n) || 0;
   return v.toLocaleString("ja-JP");
 }
 
-function amountFontSizeByDigits(formatted: string) {
-  // 例: "30,000" みたいな文字列長で段階的に小さく
-  const len = formatted.length;
-  if (len >= 9) return 7;  // "1,234,567" 以上
-  if (len >= 7) return 8;  // "123,456" くらい
-  return 9;                // それ以下
-}
-
 export default function CalendarScreen() {
+  const { theme } = useAppTheme();
+
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [currentMonth, setCurrentMonth] = useState<Date>(() => {
     const now = new Date();
@@ -74,31 +50,19 @@ export default function CalendarScreen() {
     }
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      load();
-    }, [load])
-  );
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  // 月移動
   const moveMonth = (delta: number) => {
     setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
   };
 
-  // createdAt を使って日付判定（date文字列より安全）
   const recordDateObj = useCallback((r: RecordItem) => {
     const d = new Date(r.createdAt);
-    if (Number.isNaN(d.getTime())) {
-      // createdAtが壊れてたら date をパース（フォールバック）
-      // "YYYY/M/D"
-      const [Y, M, D] = (r.date || "").split("/").map((x) => parseInt(x, 10));
-      if (!Y || !M || !D) return new Date();
-      return new Date(Y, M - 1, D);
-    }
-    return d;
+    if (!Number.isNaN(d.getTime())) return d;
+    const [Y, M, D] = (r.date || "").split("/").map((x) => parseInt(x, 10));
+    return new Date(Y, (M || 1) - 1, D || 1);
   }, []);
 
-  // 月内のレコード
   const monthRecords = useMemo(() => {
     const y = currentMonth.getFullYear();
     const m = currentMonth.getMonth();
@@ -108,48 +72,7 @@ export default function CalendarScreen() {
     });
   }, [records, currentMonth, recordDateObj]);
 
-  // 今月の合計
-  const monthIncome = useMemo(() => {
-    return monthRecords
-      .filter((r) => r.mode === "income")
-      .reduce((s, r) => s + (Number(r.actualAmount) || 0), 0);
-  }, [monthRecords]);
-
-  const monthExpense = useMemo(() => {
-    return monthRecords
-      .filter((r) => r.mode === "expense")
-      .reduce((s, r) => s + (Number(r.actualAmount) || 0), 0);
-  }, [monthRecords]);
-
-  const monthBalance = useMemo(() => monthIncome - monthExpense, [monthIncome, monthExpense]);
-
-  // 累計残高（全期間）
-  const totalBalance = useMemo(() => {
-    let inc = 0;
-    let exp = 0;
-    records.forEach((r) => {
-      const a = Number(r.actualAmount) || 0;
-      if (r.mode === "income") inc += a;
-      else exp += a;
-    });
-    return inc - exp;
-  }, [records]);
-
-  // 選択日の明細
-  const selectedRecords = useMemo(() => {
-    return records
-      .filter((r) => sameYMD(recordDateObj(r), selectedDate))
-      .sort((a, b) => {
-        // 新しい順（idがDate.now想定）
-        const na = Number(a.id) || 0;
-        const nb = Number(b.id) || 0;
-        return nb - na;
-      });
-  }, [records, selectedDate, recordDateObj]);
-
-  // 日別集計Map（表示高速化）
   const daySumMap = useMemo(() => {
-    // key = "YYYY/M/D" → {inc, exp}
     const map = new Map<string, { inc: number; exp: number }>();
     monthRecords.forEach((r) => {
       const d = recordDateObj(r);
@@ -163,12 +86,31 @@ export default function CalendarScreen() {
     return map;
   }, [monthRecords, recordDateObj]);
 
-  // カレンダー用配列（42マス）
+  const selectedRecords = useMemo(() => {
+    return records
+      .filter((r) => sameYMD(recordDateObj(r), selectedDate))
+      .sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+  }, [records, selectedDate, recordDateObj]);
+
+  const monthIncome = useMemo(() => monthRecords.filter(r => r.mode === "income").reduce((s,r)=>s+(Number(r.actualAmount)||0),0), [monthRecords]);
+  const monthExpense = useMemo(() => monthRecords.filter(r => r.mode === "expense").reduce((s,r)=>s+(Number(r.actualAmount)||0),0), [monthRecords]);
+  const monthBalance = monthIncome - monthExpense;
+
+  const totalBalance = useMemo(() => {
+    let inc = 0, exp = 0;
+    records.forEach((r) => {
+      const a = Number(r.actualAmount) || 0;
+      if (r.mode === "income") inc += a;
+      else exp += a;
+    });
+    return inc - exp;
+  }, [records]);
+
   const cells = useMemo(() => {
     const y = currentMonth.getFullYear();
     const m = currentMonth.getMonth();
     const first = new Date(y, m, 1);
-    const firstDay = first.getDay(); // 0:日
+    const firstDay = first.getDay();
     const daysInMonth = new Date(y, m + 1, 0).getDate();
 
     const arr: Array<{ day: number | null; dateObj: Date | null }> = [];
@@ -178,29 +120,22 @@ export default function CalendarScreen() {
     return arr;
   }, [currentMonth]);
 
-  // 削除
-  const deleteItem = useCallback(
-    async (id: string) => {
-      const next = records.filter((r) => r.id !== id);
-      setRecords(next);
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    },
-    [records]
-  );
+  const deleteItem = useCallback(async (id: string) => {
+    const next = records.filter((r) => r.id !== id);
+    setRecords(next);
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  }, [records]);
 
-  const confirmDelete = useCallback(
-    (id: string) => {
-      Alert.alert("削除", "この明細を削除する？", [
-        { text: "キャンセル", style: "cancel" },
-        { text: "削除", style: "destructive", onPress: () => deleteItem(id) },
-      ]);
-    },
-    [deleteItem]
-  );
+  const confirmDelete = useCallback((id: string) => {
+    Alert.alert("削除", "この明細を削除する？", [
+      { text: "キャンセル", style: "cancel" },
+      { text: "削除", style: "destructive", onPress: () => deleteItem(id) },
+    ]);
+  }, [deleteItem]);
 
   const renderRightActions = (id: string) => (
     <TouchableOpacity
-      style={styles.deleteBtn}
+      style={[styles.deleteBtn, { backgroundColor: theme.danger }]}
       onPress={() => confirmDelete(id)}
       activeOpacity={0.85}
     >
@@ -211,17 +146,11 @@ export default function CalendarScreen() {
   const renderDetailItem = ({ item }: { item: RecordItem }) => {
     const isIncome = item.mode === "income";
     const amountText = `${isIncome ? "+" : "-"}${formatYen(item.actualAmount)}円`;
-
     return (
       <Swipeable renderRightActions={() => renderRightActions(item.id)}>
-        <View style={styles.detailRow}>
-          <View style={{ flex: 1 }}>
-            {/* 日付は出さない（上に書いてあるから） */}
-            <Text style={styles.detailTitle}>{item.store || "未分類"}</Text>
-          </View>
-          <Text style={[styles.detailAmount, isIncome ? styles.green : styles.red]}>
-            {amountText}
-          </Text>
+        <View style={[styles.detailRow, { borderColor: theme.border, backgroundColor: theme.card }]}>
+          <Text style={[styles.detailTitle, { color: theme.text }]}>{item.store || "未分類"}</Text>
+          <Text style={[styles.detailAmount, { color: isIncome ? theme.success : theme.danger }]}>{amountText}</Text>
         </View>
       </Swipeable>
     );
@@ -230,56 +159,34 @@ export default function CalendarScreen() {
   const today = new Date();
 
   return (
-    <View style={styles.container}>
-      {/* 月ヘッダー */}
+    <View style={[styles.container, { backgroundColor: theme.bg }]}>
       <View style={styles.monthHeader}>
-        <TouchableOpacity style={styles.navBtn} onPress={() => moveMonth(-1)}>
-          <Text style={styles.navTxt}>◀</Text>
+        <TouchableOpacity style={[styles.navBtn, { backgroundColor: theme.card, borderColor: theme.border }]} onPress={() => moveMonth(-1)}>
+          <Text style={[styles.navTxt, { color: theme.text }]}>◀</Text>
         </TouchableOpacity>
-
-        <Text style={styles.monthTitle}>
+        <Text style={[styles.monthTitle, { color: theme.text }]}>
           {currentMonth.getFullYear()}年 {currentMonth.getMonth() + 1}月
         </Text>
-
-        <TouchableOpacity style={styles.navBtn} onPress={() => moveMonth(1)}>
-          <Text style={styles.navTxt}>▶</Text>
+        <TouchableOpacity style={[styles.navBtn, { backgroundColor: theme.card, borderColor: theme.border }]} onPress={() => moveMonth(1)}>
+          <Text style={[styles.navTxt, { color: theme.text }]}>▶</Text>
         </TouchableOpacity>
       </View>
 
-      {/* 曜日 */}
       <View style={styles.weekRow}>
-        {["日", "月", "火", "水", "木", "金", "土"].map((w, idx) => (
-          <Text
-            key={w}
-            style={[
-              styles.weekTxt,
-              idx === 0 && { color: "#C23B3B" },
-              idx === 6 && { color: "#2B66FF" },
-            ]}
-          >
+        {["日","月","火","水","木","金","土"].map((w, idx) => (
+          <Text key={w} style={[styles.weekTxt, { color: theme.subText }, idx===0 && { color: theme.danger }, idx===6 && { color: theme.primary }]}>
             {w}
           </Text>
         ))}
       </View>
 
-      {/* カレンダー */}
       <View style={styles.grid}>
         {cells.map((c, idx) => {
-          if (!c.day || !c.dateObj) {
-            return <View key={idx} style={[styles.cell, styles.cellBlank]} />;
-          }
-
+          if (!c.day || !c.dateObj) return <View key={idx} style={[styles.cell, styles.cellBlank]} />;
           const key = ymd(c.dateObj);
           const sums = daySumMap.get(key) || { inc: 0, exp: 0 };
-
           const isSelected = sameYMD(c.dateObj, selectedDate);
           const isToday = sameYMD(c.dateObj, today);
-
-          const incText = sums.inc > 0 ? `+${formatYen(sums.inc)}` : "";
-          const expText = sums.exp > 0 ? `-${formatYen(sums.exp)}` : "";
-
-          const incFont = incText ? amountFontSizeByDigits(incText) : 9;
-          const expFont = expText ? amountFontSizeByDigits(expText) : 9;
 
           return (
             <TouchableOpacity
@@ -288,271 +195,94 @@ export default function CalendarScreen() {
               onPress={() => setSelectedDate(c.dateObj!)}
               style={[
                 styles.cell,
-                isToday && styles.cellToday,
-                isSelected && styles.cellSelected,
+                { backgroundColor: theme.card, borderColor: theme.border },
+                isToday && { backgroundColor: theme.primarySoft },
+                isSelected && { borderColor: theme.primary, borderWidth: 2 },
               ]}
             >
-              <Text style={styles.dayNum}>{c.day}</Text>
-
-              {/* 収入 */}
-              {incText ? (
-                <Text
-                  style={[
-                    styles.amountTiny,
-                    styles.green,
-                    { fontSize: incFont },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {incText}
-                </Text>
-              ) : null}
-
-              {/* 支出 */}
-              {expText ? (
-                <Text
-                  style={[
-                    styles.amountTiny,
-                    styles.red,
-                    { fontSize: expFont },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {expText}
-                </Text>
-              ) : null}
+              <Text style={[styles.dayNum, { color: theme.text }]}>{c.day}</Text>
+              {sums.inc > 0 && <Text style={{ fontSize: 10, fontWeight: "900", color: theme.success }} numberOfLines={1}>+{formatYen(sums.inc)}</Text>}
+              {sums.exp > 0 && <Text style={{ fontSize: 10, fontWeight: "900", color: theme.danger }} numberOfLines={1}>-{formatYen(sums.exp)}</Text>}
             </TouchableOpacity>
           );
         })}
       </View>
 
-      {/* 今月まとめ */}
-      <View style={styles.summaryCard}>
-        <Text style={styles.summaryTitle}>今月</Text>
+      <View style={[styles.summaryCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <Text style={[styles.summaryTitle, { color: theme.text }]}>今月</Text>
 
         <View style={styles.summaryRow}>
-          <Text style={styles.summaryLabel}>収入</Text>
-          <Text style={[styles.summaryValue, styles.green]}>
-            +{formatYen(monthIncome)}円
+          <Text style={[styles.summaryLabel, { color: theme.text }]}>収入</Text>
+          <Text style={[styles.summaryValue, { color: theme.success }]}>+{formatYen(monthIncome)}円</Text>
+        </View>
+
+        <View style={styles.summaryRow}>
+          <Text style={[styles.summaryLabel, { color: theme.text }]}>支出</Text>
+          <Text style={[styles.summaryValue, { color: theme.danger }]}>-{formatYen(monthExpense)}円</Text>
+        </View>
+
+        <View style={[styles.hr, { backgroundColor: theme.border }]} />
+
+        <View style={styles.summaryRow}>
+          <Text style={[styles.summaryLabel, { color: theme.text }]}>残高</Text>
+          <Text style={[styles.summaryValue, { color: theme.text }]}>
+            {monthBalance >= 0 ? "+" : ""}{formatYen(monthBalance)}円
           </Text>
         </View>
 
         <View style={styles.summaryRow}>
-          <Text style={styles.summaryLabel}>支出</Text>
-          <Text style={[styles.summaryValue, styles.red]}>
-            -{formatYen(monthExpense)}円
-          </Text>
-        </View>
-
-        <View style={styles.hr} />
-
-        <View style={styles.summaryRow}>
-          <Text style={styles.summaryLabel}>残高</Text>
-          <Text style={styles.summaryValue}>
-            {monthBalance >= 0 ? "+" : ""}
-            {formatYen(monthBalance)}円
-          </Text>
-        </View>
-
-        {/* ✅ 累計残高（復活） */}
-        <View style={styles.summaryRow}>
-          <Text style={styles.summaryLabel}>累計残高</Text>
-          <Text style={styles.summaryValue}>
-            {totalBalance >= 0 ? "+" : ""}
-            {formatYen(totalBalance)}円
+          <Text style={[styles.summaryLabel, { color: theme.text }]}>累計残高</Text>
+          <Text style={[styles.summaryValue, { color: theme.text }]}>
+            {totalBalance >= 0 ? "+" : ""}{formatYen(totalBalance)}円
           </Text>
         </View>
       </View>
 
-      {/* 詳細 */}
-      <View style={styles.detailArea}>
-        <Text style={styles.detailHeader}>{ymd(selectedDate)} の詳細</Text>
-
-        {selectedRecords.length > 0 && (
-          <FlatList
-           data={selectedRecords}
-           keyExtractor={(i) => i.id}
-           renderItem={renderDetailItem}
-           contentContainerStyle={{ paddingBottom: 6 }}
-          />
-      )}
-     </View>
+      <View style={[styles.detailArea, { backgroundColor: theme.card, borderColor: theme.border }]}>
+        <Text style={[styles.detailHeader, { color: theme.text }]}>{ymd(selectedDate)} の詳細</Text>
+        <FlatList
+          data={selectedRecords}
+          keyExtractor={(i) => i.id}
+          renderItem={renderDetailItem}
+          contentContainerStyle={{ paddingBottom: 6 }}
+          ListEmptyComponent={<Text style={{ color: theme.subText, fontWeight: "800" }}>この日は記録なし</Text>}
+        />
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  /* =========================
-     画面全体
-  ========================= */
-  container: {
-    flex: 1,
-    backgroundColor: "#F6F1E3",
-    paddingTop: 0,
-  },
+  container: { flex: 1, paddingTop: 6 },
 
-  /* =========================
-     月ヘッダー（◀ 2025年12月 ▶）
-  ========================= */
-  monthHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 40,
-    paddingVertical: 2,
-  },
-  monthTitle: {
-    fontSize: 18,
-    fontWeight: "900",
-  },
-  navBtn: {
-    width: 40,
-    height: 26,
-    borderRadius: 10,
-    backgroundColor: "white",
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#E8E1CF",
-  },
+  monthHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 6 },
+  monthTitle: { fontSize: 18, fontWeight: "900" },
+  navBtn: { width: 44, height: 32, borderRadius: 12, justifyContent: "center", alignItems: "center", borderWidth: 1 },
   navTxt: { fontSize: 14, fontWeight: "900" },
 
-  /* =========================
-     曜日行（日〜土）
-  ========================= */
-  weekRow: {
-    flexDirection: "row",
-    paddingHorizontal: 6,
-    marginBottom: 2,
-  },
-  weekTxt: {
-    width: "14.285%",
-    textAlign: "center",
-    fontWeight: "900",
-    color: "#222",
-    fontSize: 10,
-  },
+  weekRow: { flexDirection: "row", paddingHorizontal: 10, marginBottom: 4 },
+  weekTxt: { width: "14.285%", textAlign: "center", fontWeight: "900", fontSize: 11 },
 
-  /* =========================
-     カレンダーグリッド
-  ========================= */
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    paddingHorizontal: 6,
-    marginBottom: 4,
-  },
-
-  /* =========================
-     日付セル
-  ========================= */
-  cell: {
-    width: "14.285%",
-    height: 39, // ←「もう少しだけ縦長」ここ
-    borderRadius: 3, // ← 角丸を四角寄りに
-    backgroundColor: "white",
-    borderWidth: 1,
-    borderColor: "#E8E1CF",
-    marginBottom: 4,
-    paddingTop: 2,
-    paddingHorizontal: 3,
-  },
+  grid: { flexDirection: "row", flexWrap: "wrap", paddingHorizontal: 10, marginBottom: 6 },
+  cell: { width: "14.285%", height: 44, borderRadius: 6, borderWidth: 1, marginBottom: 6, paddingTop: 3, paddingHorizontal: 4 },
   cellBlank: { backgroundColor: "transparent", borderWidth: 0 },
 
-  // 選択中の日
-  cellSelected: { borderColor: "#2B66FF", borderWidth: 2 },
+  dayNum: { fontSize: 11, fontWeight: "900", lineHeight: 13 },
 
-  // 今日（うっすら色）
-  cellToday: { backgroundColor: "#EAF0FF" },
-
-  /* =========================
-     日付数字
-  ========================= */
-  dayNum: {
-    fontSize: 10,
-    fontWeight: "900",
-    color: "#222",
-    lineHeight: 12,
-  },
-
-  /* =========================
-     金額（セル内）
-  ========================= */
-  amountTiny: {
-    fontWeight: "900",
-    lineHeight: 11,
-    marginTop: 0,
-  },
-
-  /* =========================
-     今月まとめカード
-  ========================= */
-  summaryCard: {
-    marginTop: 0,
-    marginHorizontal: 12,
-    backgroundColor: "white",
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#E8E1CF",
-  },
+  summaryCard: { marginHorizontal: 12, borderRadius: 16, padding: 12, borderWidth: 1 },
   summaryTitle: { fontSize: 15, fontWeight: "900", marginBottom: 8 },
-  summaryRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 6,
-  },
-  summaryLabel: { fontSize: 13, fontWeight: "700", color: "#222" },
-  summaryValue: { fontSize: 15, fontWeight: "900", color: "#222" },
-  hr: { height: 1, backgroundColor: "#EFE7D7", marginVertical: 8 },
+  summaryRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
+  summaryLabel: { fontSize: 13, fontWeight: "800" },
+  summaryValue: { fontSize: 15, fontWeight: "900" },
+  hr: { height: 1, marginVertical: 8 },
 
-  /* =========================
-     詳細エリア
-  ========================= */
-  detailArea: {
-    flex: 1,
-    marginTop: 8,
-    marginHorizontal: 12,
-    backgroundColor: "white",
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#E8E1CF",
-  },
+  detailArea: { flex: 1, marginTop: 10, marginHorizontal: 12, borderRadius: 16, padding: 12, borderWidth: 1 },
   detailHeader: { fontSize: 15, fontWeight: "900", marginBottom: 10 },
-  detailEmpty: { color: "#666", fontWeight: "700" },
 
-  detailRow: {
-    backgroundColor: "#fff",
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    marginBottom: 10,
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#EFE7D7",
-  },
-  detailTitle: { fontSize: 15, fontWeight: "900", color: "#222" },
+  detailRow: { borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14, marginBottom: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center", borderWidth: 1 },
+  detailTitle: { fontSize: 15, fontWeight: "900" },
   detailAmount: { fontSize: 15, fontWeight: "900" },
 
-  /* =========================
-     スワイプ削除ボタン
-  ========================= */
-  deleteBtn: {
-    width: 90,
-    marginBottom: 10,
-    borderRadius: 12,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#FF4D4D",
-  },
+  deleteBtn: { width: 90, marginBottom: 10, borderRadius: 12, justifyContent: "center", alignItems: "center" },
   deleteTxt: { color: "white", fontWeight: "900" },
-
-  /* =========================
-     色
-  ========================= */
-  red: { color: "#C23B3B" },
-  green: { color: "#1F7A43" },
 });

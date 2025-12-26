@@ -1,13 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "expo-router";
-import React, { useCallback, useState } from "react";
-import {
-  Alert,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import React, { useCallback, useMemo, useState } from "react";
+import { Alert, FlatList, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useAppTheme } from "../../src/hooks/useAppTheme";
 
 const STORAGE_KEY = "records";
 const CATEGORY_KEY = "categories";
@@ -16,9 +11,9 @@ type Mode = "expense" | "income";
 
 type RecordItem = {
   id: string;
-  date: string; // "12/11"
+  date: string; // "YYYY/M/D"
   mode: Mode;
-  store: string; // ← カテゴリ名として使う
+  store: string;
   displayAmount: string;
   actualAmount: number;
   createdAt: string;
@@ -27,65 +22,62 @@ type RecordItem = {
 type Category = {
   id: string;
   name: string;
-  type: Mode; // expense / income
+  type: Mode;
 };
 
 const DEFAULT_CATEGORIES: Category[] = [
-  // 支出
   { id: "exp_conv", name: "コンビニ", type: "expense" },
   { id: "exp_super", name: "スーパー", type: "expense" },
+  { id: "exp_study", name: "勉強", type: "expense" },
   { id: "exp_cafe", name: "カフェ", type: "expense" },
-  // 収入
+  { id: "exp_pc", name: "パソコン", type: "expense" },
+  { id: "exp_social", name: "交際費", type: "expense" },
+  { id: "exp_other", name: "その他", type: "expense" },
+
   { id: "inc_salary", name: "給料", type: "income" },
-  { id: "inc_parttime", name: "バイト", type: "income" },
-  { id: "inc_other", name: "その他収入", type: "income" },
+  { id: "inc_part", name: "バイト", type: "income" },
+  { id: "inc_other", name: "その他", type: "income" },
 ];
 
 async function loadCategoriesFromStorage(): Promise<Category[]> {
   const json = await AsyncStorage.getItem(CATEGORY_KEY);
   if (!json) {
-    // 初回はデフォルトを書き込んで返す
-    await AsyncStorage.setItem(
-      CATEGORY_KEY,
-      JSON.stringify(DEFAULT_CATEGORIES)
-    );
+    await AsyncStorage.setItem(CATEGORY_KEY, JSON.stringify(DEFAULT_CATEGORIES));
     return DEFAULT_CATEGORIES;
   }
   try {
     const arr: Category[] = JSON.parse(json);
     if (!Array.isArray(arr) || arr.length === 0) {
-      await AsyncStorage.setItem(
-        CATEGORY_KEY,
-        JSON.stringify(DEFAULT_CATEGORIES)
-      );
+      await AsyncStorage.setItem(CATEGORY_KEY, JSON.stringify(DEFAULT_CATEGORIES));
       return DEFAULT_CATEGORIES;
     }
     return arr;
   } catch {
-    await AsyncStorage.setItem(
-      CATEGORY_KEY,
-      JSON.stringify(DEFAULT_CATEGORIES)
-    );
+    await AsyncStorage.setItem(CATEGORY_KEY, JSON.stringify(DEFAULT_CATEGORIES));
     return DEFAULT_CATEGORIES;
   }
 }
 
+function formatDateLabel(d: Date) {
+  const y = d.getFullYear();
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+  return `${y}/${m}/${day}`;
+}
+
 export default function Index() {
+  const { theme } = useAppTheme();
+
   const [mode, setMode] = useState<Mode>("expense");
 
-  // カテゴリ
   const [categories, setCategories] = useState<Category[]>([]);
-  const [selectedCategoryName, setSelectedCategoryName] =
-    useState<string>("");
+  const [selectedCategoryName, setSelectedCategoryName] = useState<string>("");
 
-  // 金額入力
   const [rawDigits, setRawDigits] = useState<string>("");
   const [amount, setAmount] = useState<number>(0);
 
-  // 日付
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
-  // 画面に戻ってきたとき & mode 変わったときにカテゴリ読み直し
   useFocusEffect(
     useCallback(() => {
       (async () => {
@@ -94,11 +86,7 @@ export default function Index() {
 
         const currentList = list.filter((c) => c.type === mode);
         if (currentList.length > 0) {
-          // まだ選択がない or 種類が変わったときは先頭を選ぶ
-          if (
-            !selectedCategoryName ||
-            !currentList.some((c) => c.name === selectedCategoryName)
-          ) {
+          if (!selectedCategoryName || !currentList.some((c) => c.name === selectedCategoryName)) {
             setSelectedCategoryName(currentList[0].name);
           }
         } else {
@@ -108,14 +96,6 @@ export default function Index() {
     }, [mode])
   );
 
-  // ========= 日付 =========
-  const formatDateLabel = (d: Date) => {
-   const y = d.getFullYear();
-   const m = d.getMonth() + 1;
-   const day = d.getDate();
-   return `${y}/${m}/${day}`;
-  };
-
   const changeDateBy = (delta: number) => {
     setSelectedDate((prev) => {
       const next = new Date(prev);
@@ -124,19 +104,12 @@ export default function Index() {
     });
   };
 
-  // ========= 金額ロジック（2桁入力で百の位） =========
+  // 2桁=百円単位の仕様は残しつつ、UI文言は出さない
   const updateAmountFromDigits = (digits: string) => {
-    if (!digits) {
-      setAmount(0);
-      return;
-    }
+    if (!digits) return setAmount(0);
     const n = parseInt(digits, 10);
-    if (Number.isNaN(n)) {
-      setAmount(0);
-      return;
-    }
-    const rounded = n * 100; // 34 → 3400円
-    setAmount(rounded);
+    if (Number.isNaN(n)) return setAmount(0);
+    setAmount(n * 100);
   };
 
   const handleDigitPress = (digit: string) => {
@@ -156,41 +129,27 @@ export default function Index() {
     });
   };
 
-  const formatAmountText = () => {
-    if (rawDigits === "") return "00";
+  const amountText = useMemo(() => {
+    if (!rawDigits) return "0";
     return amount.toLocaleString("ja-JP", { maximumFractionDigits: 0 });
-  };
+  }, [rawDigits, amount]);
 
   const resetInput = () => {
     setRawDigits("");
     setAmount(0);
     setMode("expense");
-    // 支出カテゴリの先頭を選び直し
     const expList = categories.filter((c) => c.type === "expense");
-    if (expList.length > 0) {
-      setSelectedCategoryName(expList[0].name);
-    } else {
-      setSelectedCategoryName("");
-    }
+    setSelectedCategoryName(expList[0]?.name ?? "");
   };
 
-  // ========= 保存 =========
   const handleSave = async () => {
     if (amount === 0) {
-      Alert.alert("金額が 0 円です", "金額を入力してください。");
+      Alert.alert("金額が0円です", "金額を入力してね。");
       return;
     }
+    const dateLabel = formatDateLabel(selectedDate);
+    const categoryName = selectedCategoryName || (mode === "expense" ? "支出" : "収入");
 
-    const y = selectedDate.getFullYear();
-    const m = selectedDate.getMonth() + 1;
-    const day = selectedDate.getDate();
-    const dateLabel = `${y}/${m}/${day}`;
-
-
-    const categoryName =
-      selectedCategoryName || (mode === "expense" ? "支出" : "収入");
-
-    // 🔽 ここで「選択している日付」の Date を作る
     const createdAtDate = new Date(
       selectedDate.getFullYear(),
       selectedDate.getMonth(),
@@ -201,10 +160,9 @@ export default function Index() {
       id: Date.now().toString(),
       date: dateLabel,
       mode,
-      store: categoryName, // カテゴリ名
-      displayAmount: formatAmountText(),
+      store: categoryName,
+      displayAmount: amountText,
       actualAmount: mode === "expense" ? amount + 50 : amount,
-      // 🔽 ここを「今」じゃなくて、選択した日付にする
       createdAt: createdAtDate.toISOString(),
     };
 
@@ -213,292 +171,265 @@ export default function Index() {
       const list: RecordItem[] = json ? JSON.parse(json) : [];
       const updated = [newRecord, ...list];
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-
       resetInput();
-      Alert.alert("保存しました");
+      Alert.alert("保存した！");
     } catch (e) {
       console.error(e);
-      Alert.alert("エラー", "保存に失敗しました");
+      Alert.alert("エラー", "保存に失敗した…");
     }
   };
 
+  const currentCategories = useMemo(() => categories.filter((c) => c.type === mode), [categories, mode]);
 
-  const currentCategories = categories.filter((c) => c.type === mode);
-
-  // ========= JSX =========
   return (
-    <View style={styles.container}>
-      {/* 支出 / 収入 */}
-      <View style={styles.modeRow}>
-        <TouchableOpacity
-          style={[
-            styles.modeButton,
-            mode === "expense" ? styles.modeActiveExpense : styles.modeInactive,
-          ]}
-          onPress={() => setMode("expense")}
-        >
-          <Text
-            style={[
-              styles.modeText,
-              mode === "expense"
-                ? styles.modeTextActive
-                : styles.modeTextInactive,
-            ]}
-          >
-            支出
-          </Text>
-        </TouchableOpacity>
+    <SafeAreaView style={[styles.safe, { backgroundColor: theme.bg }]}>
+      <View style={[styles.container, { backgroundColor: theme.bg }]}>
+        <Text style={[styles.screenTitle, { color: theme.text }]}>入力</Text>
 
-        <TouchableOpacity
-          style={[
-            styles.modeButton,
-            mode === "income" ? styles.modeActiveIncome : styles.modeInactive,
-          ]}
-          onPress={() => setMode("income")}
-        >
-          <Text
-            style={[
-              styles.modeText,
-              mode === "income"
-                ? styles.modeTextActive
-                : styles.modeTextInactive,
-            ]}
-          >
-            収入
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* 日付 */}
-      <View style={styles.row}>
-        <Text style={styles.label}>日付</Text>
-        <View style={styles.dateControls}>
-          <TouchableOpacity
-            style={styles.dateButton}
-            onPress={() => changeDateBy(-1)}
-          >
-            <Text style={styles.dateButtonText}>◀</Text>
-          </TouchableOpacity>
-
-          <Text style={styles.dateText}>{formatDateLabel(selectedDate)}</Text>
-
-          <TouchableOpacity
-            style={styles.dateButton}
-            onPress={() => changeDateBy(1)}
-          >
-            <Text style={styles.dateButtonText}>▶</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* 金額 */}
-      <View style={styles.row}>
-        <Text style={styles.label}>金額</Text>
-        <View style={styles.amountBox}>
-          <Text style={styles.amountText}>{formatAmountText()} 円</Text>
-        </View>
-      </View>
-
-      {/* カテゴリ */}
-      <View style={[styles.row, { marginTop: 16 }]}>
-        <Text style={styles.label}>カテゴリ</Text>
-      </View>
-
-      <View style={styles.storeRow}>
-        {currentCategories.map((cat) => (
-          <TouchableOpacity
-            key={cat.id}
-            style={[
-              styles.storeButton,
-              selectedCategoryName === cat.name && styles.storeButtonActive,
-            ]}
-            onPress={() => setSelectedCategoryName(cat.name)}
-          >
-            <Text
+        {/* 支出/収入 */}
+        <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={[styles.segmentWrap, { backgroundColor: theme.card2, borderColor: theme.border }]}>
+            <TouchableOpacity
               style={[
-                styles.storeButtonText,
-                selectedCategoryName === cat.name &&
-                  styles.storeButtonTextActive,
+                styles.segmentBtn,
+                mode === "expense" && { backgroundColor: theme.primary },
               ]}
+              onPress={() => setMode("expense")}
+              activeOpacity={0.85}
             >
-              {cat.name}
-            </Text>
-          </TouchableOpacity>
-        ))}
-        {currentCategories.length === 0 && (
-          <Text style={{ marginLeft: 8 }}>カテゴリがありません（設定から追加）</Text>
-        )}
-      </View>
+              <Text style={[styles.segmentText, { color: mode === "expense" ? "#fff" : theme.text }]}>
+                支出
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.segmentBtn,
+                mode === "income" && { backgroundColor: theme.primary },
+              ]}
+              onPress={() => setMode("income")}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.segmentText, { color: mode === "income" ? "#fff" : theme.text }]}>
+                収入
+              </Text>
+            </TouchableOpacity>
+          </View>
 
-      {/* キーパッド */}
-      <View style={styles.keypad}>
-        {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map((d) => (
+          {/* 日付 */}
+          <View style={styles.row}>
+            <Text style={[styles.label, { color: theme.text }]}>日付</Text>
+            <View style={styles.dateControls}>
+              <TouchableOpacity
+                style={[styles.iconBtn, { backgroundColor: theme.card2, borderColor: theme.border }]}
+                onPress={() => changeDateBy(-1)}
+              >
+                <Text style={{ fontWeight: "900", color: theme.text }}>◀</Text>
+              </TouchableOpacity>
+              <Text style={[styles.dateText, { color: theme.text }]}>{formatDateLabel(selectedDate)}</Text>
+              <TouchableOpacity
+                style={[styles.iconBtn, { backgroundColor: theme.card2, borderColor: theme.border }]}
+                onPress={() => changeDateBy(1)}
+              >
+                <Text style={{ fontWeight: "900", color: theme.text }}>▶</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+
+        {/* 金額（縦短く） */}
+        <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={styles.rowHeader}>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>金額</Text>
+            <Text style={[styles.cardHint, { color: theme.subText }]}>2桁=百円</Text>
+          </View>
+
+          <View style={[styles.amountBox, { backgroundColor: theme.card2, borderColor: theme.border }]}>
+            <Text style={[styles.amountText, { color: theme.text }]}>{amountText}</Text>
+            <Text style={[styles.amountUnit, { color: theme.subText }]}>円</Text>
+          </View>
+        </View>
+
+        {/* カテゴリ（固定枠 + 横スワイプ） */}
+        <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <View style={styles.rowHeader}>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>カテゴリ</Text>
+          </View>
+
+          <View style={[styles.categoryViewport, { backgroundColor: theme.card2, borderColor: theme.border }]}>
+            <FlatList
+              data={currentCategories}
+              keyExtractor={(item) => item.id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingHorizontal: 10, alignItems: "center" }}
+              renderItem={({ item }) => {
+                const active = selectedCategoryName === item.name;
+                return (
+                  <TouchableOpacity
+                    onPress={() => setSelectedCategoryName(item.name)}
+                    style={[
+                      styles.catPill,
+                      {
+                        backgroundColor: active ? theme.primary : theme.card,
+                        borderColor: active ? theme.primary : theme.border,
+                      },
+                    ]}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={{ fontWeight: "900", color: active ? "#fff" : theme.text }}>
+                      {item.name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              }}
+              ListEmptyComponent={
+                <Text style={{ color: theme.subText, paddingHorizontal: 10 }}>
+                  設定でカテゴリ追加してね
+                </Text>
+              }
+            />
+          </View>
+        </View>
+
+        {/* キーパッド（下まで見れるサイズ） */}
+        <View style={styles.keypad}>
+          {["1","2","3","4","5","6","7","8","9"].map((d) => (
+            <TouchableOpacity
+              key={d}
+              style={[styles.keyBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+              onPress={() => handleDigitPress(d)}
+              activeOpacity={0.85}
+            >
+              <Text style={[styles.keyText, { color: theme.text }]}>{d}</Text>
+            </TouchableOpacity>
+          ))}
+
           <TouchableOpacity
-            key={d}
-            style={styles.keyButton}
-            onPress={() => handleDigitPress(d)}
+            style={[styles.keyBtn, styles.keySave, { backgroundColor: theme.primary, borderColor: theme.primary }]}
+            onPress={handleSave}
+            activeOpacity={0.9}
           >
-            <Text style={styles.keyText}>{d}</Text>
+            <Text style={[styles.keyText, { color: "#fff" }]}>保存</Text>
           </TouchableOpacity>
-        ))}
 
-        {/* 保存 */}
-        <TouchableOpacity
-          style={[styles.keyButton, styles.saveButton]}
-          onPress={handleSave}
-        >
-          <Text style={styles.saveButtonText}>保存</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.keyBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+            onPress={() => handleDigitPress("0")}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.keyText, { color: theme.text }]}>0</Text>
+          </TouchableOpacity>
 
-        {/* 0 */}
-        <TouchableOpacity
-          style={styles.keyButton}
-          onPress={() => handleDigitPress("0")}
-        >
-          <Text style={styles.keyText}>0</Text>
-        </TouchableOpacity>
-
-        {/* ← */}
-        <TouchableOpacity style={styles.keyButton} onPress={handleBackspace}>
-          <Text style={styles.keyText}>←</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.keyBtn, { backgroundColor: theme.card, borderColor: theme.border }]}
+            onPress={handleBackspace}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.keyText, { color: theme.text }]}>←</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  safe: { flex: 1 },
   container: {
     flex: 1,
-    backgroundColor: "#f7f2de",
-    paddingTop: 40,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
+    paddingTop: 6,
+    paddingBottom: 10,
   },
-  modeRow: {
-    flexDirection: "row",
-    justifyContent: "center",
-    marginBottom: 16,
-  },
-  modeButton: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 24,
-    marginHorizontal: 6,
-    alignItems: "center",
-  },
-  modeActiveExpense: {
-    backgroundColor: "#4c6fff",
-  },
-  modeActiveIncome: {
-    backgroundColor: "#c6b5ff",
-  },
-  modeInactive: {
-    backgroundColor: "#e2e2e2",
-  },
-  modeText: {
-    fontSize: 16,
-    fontWeight: "bold",
-  },
-  modeTextActive: {
-    color: "#fff",
-  },
-  modeTextInactive: {
-    color: "#555",
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
+  screenTitle: {
+    fontSize: 18,
+    fontWeight: "900",
+    textAlign: "center",
     marginBottom: 8,
   },
-  label: {
-    fontSize: 16,
-    fontWeight: "bold",
-    width: 70,
-  },
-  amountBox: {
-    flex: 1,
-    backgroundColor: "#fff",
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    alignItems: "flex-end",
-  },
-  amountText: {
-    fontSize: 28,
-    fontWeight: "bold",
-  },
-  storeRow: {
-    flexDirection: "row",
-    marginBottom: 16,
-    flexWrap: "wrap",
-  },
-  storeButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: "#aee7ff",
-    borderRadius: 12,
-    marginHorizontal: 4,
-    marginVertical: 4,
-  },
-  storeButtonActive: {
-    backgroundColor: "#4c6fff",
-  },
-  storeButtonText: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#333",
-  },
-  storeButtonTextActive: {
-    color: "#fff",
-  },
-  keypad: {
-    marginTop: 8,
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-  },
-  keyButton: {
-    width: "30%",
-    aspectRatio: 1,
-    margin: "1.5%",
+  card: {
+    borderWidth: 1,
     borderRadius: 16,
-    backgroundColor: "#fff",
+    padding: 12,
+    marginBottom: 10,
+  },
+
+  segmentWrap: {
+    flexDirection: "row",
+    borderRadius: 999,
+    borderWidth: 1,
+    padding: 4,
+    marginBottom: 10,
+  },
+  segmentBtn: {
+    flex: 1,
+    height: 40,
+    borderRadius: 999,
     justifyContent: "center",
     alignItems: "center",
-    elevation: 2,
   },
-  keyText: {
-    fontSize: 24,
-    fontWeight: "bold",
+  segmentText: { fontSize: 15, fontWeight: "900" },
+
+  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  label: { fontSize: 15, fontWeight: "900" },
+  dateControls: { flexDirection: "row", alignItems: "center" },
+  iconBtn: {
+    width: 38,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: "center",
+    alignItems: "center",
   },
-  saveButton: {
-    backgroundColor: "#2962ff",
-  },
-  saveButtonText: {
-    fontSize: 20,
-    fontWeight: "bold",
-    color: "#fff",
-  },
-  dateControls: {
+  dateText: { fontSize: 18, fontWeight: "900", marginHorizontal: 12 },
+
+  rowHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
+  cardTitle: { fontSize: 15, fontWeight: "900" },
+  cardHint: { fontSize: 12, fontWeight: "800" },
+
+  amountBox: {
+    borderWidth: 1,
+    borderRadius: 14,
+    height: 62,           // ✅ 縦短く
+    paddingHorizontal: 14,
     flexDirection: "row",
     alignItems: "center",
-    marginLeft: 8,
+    justifyContent: "flex-end",
   },
-  dateButton: {
-    width: 40,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: "#fff",
+  amountText: { fontSize: 30, fontWeight: "900" },
+  amountUnit: { fontSize: 16, fontWeight: "900", marginLeft: 6 },
+
+  categoryViewport: {
+    borderWidth: 1,
+    borderRadius: 14,
+    height: 64,           // ✅ 固定枠
+    justifyContent: "center",
+  },
+  catPill: {
+    height: 40,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
     justifyContent: "center",
     alignItems: "center",
+    marginRight: 10,
   },
-  dateButtonText: {
-    fontSize: 16,
-    fontWeight: "bold",
+
+  keypad: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    marginTop: 2,
   },
-  dateText: {
-    fontSize: 18,
-    fontWeight: "bold",
-    marginHorizontal: 12,
+  keyBtn: {
+    width: "31.5%",
+    height: 62,           // ✅ 大きすぎない
+    borderRadius: 16,
+    borderWidth: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 10,
   },
+  keyText: { fontSize: 22, fontWeight: "900" },
+  keySave: {},
 });
