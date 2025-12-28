@@ -1,50 +1,35 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import React, { createContext, useEffect, useMemo, useState } from "react";
-import { AppTheme, THEMES, ThemeId } from "../constants/appTheme";
+import React, { createContext, useCallback, useEffect, useMemo, useState } from "react";
+import { THEMES, ThemeId } from "../constants/appTheme";
 
-const STORAGE_KEY_THEME = "mot_theme_id";
+const KEY = "app_theme_id_v1";
 
 type Ctx = {
-  theme: AppTheme;
   themeId: ThemeId;
+  theme: typeof THEMES[ThemeId];
   setThemeId: (id: ThemeId) => void;
-  isReady: boolean;
 };
 
 export const AppThemeContext = createContext<Ctx | null>(null);
 
-export default function AppThemeProvider({ children }: { children: React.ReactNode }) {
-  const [themeId, setThemeIdState] = useState<ThemeId>("blue");
-  const [isReady, setIsReady] = useState(false);
+export function AppThemeProvider({ children }: { children: React.ReactNode }) {
+  const [themeId, setThemeIdState] = useState<ThemeId>("mono");
 
   useEffect(() => {
     (async () => {
-      try {
-        const saved = await AsyncStorage.getItem(STORAGE_KEY_THEME);
-        if (saved && (saved === "blue" || saved === "green" || saved === "mono")) {
-          setThemeIdState(saved);
-        }
-      } catch {
-        // ignore
-      } finally {
-        setIsReady(true);
-      }
+      const raw = await AsyncStorage.getItem(KEY);
+      if (raw === "blue" || raw === "green" || raw === "mono") setThemeIdState(raw);
     })();
   }, []);
 
-  const setThemeId = async (id: ThemeId) => {
+  const setThemeId = useCallback(async (id: ThemeId) => {
     setThemeIdState(id);
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY_THEME, id);
-    } catch {
-      // ignore
-    }
-  };
+    await AsyncStorage.setItem(KEY, id);
+  }, []);
 
   const value = useMemo<Ctx>(() => {
-    const theme = THEMES[themeId] ?? THEMES.blue;
-    return { theme, themeId, setThemeId, isReady };
-  }, [themeId]);
+    return { themeId, theme: THEMES[themeId], setThemeId };
+  }, [themeId, setThemeId]);
 
   return <AppThemeContext.Provider value={value}>{children}</AppThemeContext.Provider>;
 }

@@ -5,7 +5,6 @@ import { useAppTheme } from "../../src/hooks/useAppTheme";
 
 export default function Settings() {
   const { theme, themeId, setThemeId } = useAppTheme();
-
   const ids: ThemeId[] = ["blue", "green", "mono"];
 
   return (
@@ -31,9 +30,7 @@ export default function Settings() {
                 ]}
                 activeOpacity={0.85}
               >
-                <Text style={{ fontWeight: "900", color: active ? "#fff" : theme.text }}>
-                  {THEME_LABEL[id]}
-                </Text>
+                <Text style={{ fontWeight: "900", color: active ? "#fff" : theme.text }}>{THEME_LABEL[id]}</Text>
               </TouchableOpacity>
             );
           })}
@@ -52,5 +49,14 @@ const styles = StyleSheet.create({
   title: { fontSize: 18, fontWeight: "900", textAlign: "center", marginBottom: 10 },
   card: { borderWidth: 1, borderRadius: 16, padding: 12 },
   cardTitle: { fontSize: 15, fontWeight: "900" },
-  pill: { height: 42, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, justifyContent: "center", alignItems: "center", marginRight: 10, marginBottom: 10 },
+  pill: {
+    height: 42,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    borderWidth: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    marginRight: 10,
+    marginBottom: 10,
+  },
 });
